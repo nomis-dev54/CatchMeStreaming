@@ -6,6 +6,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,13 +18,23 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.catchmestreaming.ui.theme.CatchMeStreamingTheme
+import com.example.catchmestreaming.util.NetworkUtil
+import androidx.compose.ui.platform.LocalContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit = {}
 ) {
-    var rtspUrl by remember { mutableStateOf("rtsp://192.168.1.100:8554/stream") }
+    val context = LocalContext.current
+    
+    // Generate dynamic RTSP URL based on device IP
+    val dynamicRtspUrl = remember {
+        val bestIp = NetworkUtil.getBestIpForStreaming(context)
+        NetworkUtil.generateRtspUrl(bestIp)
+    }
+    
+    var rtspUrl by remember { mutableStateOf(dynamicRtspUrl) }
     var username by remember { mutableStateOf("admin") }
     var password by remember { mutableStateOf("password") }
     var passwordVisible by remember { mutableStateOf(false) }
@@ -65,7 +76,20 @@ fun SettingsScreen(
                     label = { Text("RTSP URL") },
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = { Text("rtsp://your-ip:8554/stream") },
-                    supportingText = { Text("The URL where the stream will be available") }
+                    supportingText = { Text("Auto-detected device IP. Edit if needed.") },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = {
+                                val newIp = NetworkUtil.getBestIpForStreaming(context)
+                                rtspUrl = NetworkUtil.generateRtspUrl(newIp)
+                            }
+                        ) {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = "Refresh IP"
+                            )
+                        }
+                    }
                 )
                 
                 OutlinedTextField(
