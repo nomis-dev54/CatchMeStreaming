@@ -104,3 +104,6 @@ CatchMeStreaming is an Android RTSP streaming application built with:
 - Runtime permission handling
 - Input validation and sanitization
 - Code obfuscation with ProGuard/R8 
+
+- if a test fails every effort should be made to fix an issue before simplifying a test
+- if a function fails every effort should be made to fix the issue instead of removing or simplifying, if it can not be resolved inform me of the options that can be taken

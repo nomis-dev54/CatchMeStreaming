@@ -19,26 +19,38 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.catchmestreaming.ui.theme.CatchMeStreamingTheme
 import com.example.catchmestreaming.util.NetworkUtil
+import com.example.catchmestreaming.data.RTSPConfig
+import com.example.catchmestreaming.data.StreamQuality
 import androidx.compose.ui.platform.LocalContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
+    currentConfig: RTSPConfig? = null,
+    onSaveConfig: (RTSPConfig) -> Unit = {},
     onNavigateBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
     
-    // Generate dynamic RTSP URL based on device IP
-    val dynamicRtspUrl = remember {
-        val bestIp = NetworkUtil.getBestIpForStreaming(context)
-        NetworkUtil.generateRtspUrl(bestIp)
-    }
+    // Initialize from current config or defaults
+    val defaultServerUrl = NetworkUtil.getBestIpForStreaming(context)
     
-    var rtspUrl by remember { mutableStateOf(dynamicRtspUrl) }
-    var username by remember { mutableStateOf("admin") }
-    var password by remember { mutableStateOf("password") }
+    var serverUrl by remember { mutableStateOf(currentConfig?.serverUrl ?: defaultServerUrl) }
+    var port by remember { mutableStateOf(currentConfig?.port?.toString() ?: "554") }
+    var streamPath by remember { mutableStateOf(currentConfig?.streamPath ?: "/live") }
+    var username by remember { mutableStateOf(currentConfig?.username ?: "admin") }
+    var password by remember { mutableStateOf(currentConfig?.password ?: "Password123!") }
     var passwordVisible by remember { mutableStateOf(false) }
-    var recordingQuality by remember { mutableStateOf("720p") }
+    var useAuthentication by remember { mutableStateOf(currentConfig?.useAuthentication ?: true) }
+    var enableAudio by remember { mutableStateOf(currentConfig?.enableAudio ?: true) }
+    var selectedQuality by remember { mutableStateOf(currentConfig?.quality ?: StreamQuality.MEDIUM) }
+    var maxBitrate by remember { mutableStateOf(currentConfig?.maxBitrate?.toString() ?: "2000000") }
+    
+    // Validation errors
+    var serverUrlError by remember { mutableStateOf<String?>(null) }
+    var portError by remember { mutableStateOf<String?>(null) }
+    var passwordError by remember { mutableStateOf<String?>(null) }
+    var bitrateError by remember { mutableStateOf<String?>(null) }
     
     Scaffold(
         topBar = {
@@ -71,17 +83,24 @@ fun SettingsScreen(
             // RTSP Configuration Section
             SettingsSection(title = "RTSP Configuration") {
                 OutlinedTextField(
-                    value = rtspUrl,
-                    onValueChange = { rtspUrl = it },
-                    label = { Text("RTSP URL") },
+                    value = serverUrl,
+                    onValueChange = { 
+                        serverUrl = it
+                        serverUrlError = null
+                    },
+                    label = { Text("Server URL") },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("rtsp://your-ip:8554/stream") },
-                    supportingText = { Text("Auto-detected device IP. Edit if needed.") },
+                    placeholder = { Text("192.168.1.100 or domain.com") },
+                    supportingText = { 
+                        Text(serverUrlError ?: "Auto-detected device IP. Edit if needed.")
+                    },
+                    isError = serverUrlError != null,
                     trailingIcon = {
                         IconButton(
                             onClick = {
                                 val newIp = NetworkUtil.getBestIpForStreaming(context)
-                                rtspUrl = NetworkUtil.generateRtspUrl(newIp)
+                                serverUrl = newIp
+                                serverUrlError = null
                             }
                         ) {
                             Icon(
@@ -92,66 +111,162 @@ fun SettingsScreen(
                     }
                 )
                 
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    label = { Text("Username") },
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("Enter username") }
-                )
-                
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Password") },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("Enter password") },
-                    visualTransformation = if (passwordVisible) 
-                        VisualTransformation.None 
-                    else 
-                        PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    trailingIcon = {
-                        TextButton(onClick = { passwordVisible = !passwordVisible }) {
-                            Text(if (passwordVisible) "Hide" else "Show")
-                        }
-                    }
-                )
-            }
-            
-            // Recording Configuration Section
-            SettingsSection(title = "Recording Configuration") {
-                var expanded by remember { mutableStateOf(false) }
-                val qualityOptions = listOf("720p", "1080p")
-                
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = !expanded }
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     OutlinedTextField(
-                        value = recordingQuality,
+                        value = port,
+                        onValueChange = { 
+                            port = it.filter { char -> char.isDigit() }
+                            portError = null
+                        },
+                        label = { Text("Port") },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("554") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        supportingText = { Text(portError ?: "Default: 554") },
+                        isError = portError != null
+                    )
+                    
+                    OutlinedTextField(
+                        value = streamPath,
+                        onValueChange = { streamPath = it },
+                        label = { Text("Stream Path") },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("/live") },
+                        supportingText = { Text("URL path component") }
+                    )
+                }
+                
+                // Authentication Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = useAuthentication,
+                        onCheckedChange = { useAuthentication = it }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Enable Authentication")
+                }
+                
+                // Authentication fields (only shown when enabled)
+                if (useAuthentication) {
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = { username = it },
+                        label = { Text("Username") },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Enter username") },
+                        supportingText = { Text("RTSP authentication username") }
+                    )
+                    
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { 
+                            password = it
+                            passwordError = null
+                        },
+                        label = { Text("Password") },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Enter strong password") },
+                        visualTransformation = if (passwordVisible) 
+                            VisualTransformation.None 
+                        else 
+                            PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        supportingText = { 
+                            Text(passwordError ?: "Min 8 chars, mixed case, numbers, symbols")
+                        },
+                        isError = passwordError != null,
+                        trailingIcon = {
+                            TextButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Text(if (passwordVisible) "Hide" else "Show")
+                            }
+                        }
+                    )
+                }
+            }
+            
+            // Streaming Configuration Section
+            SettingsSection(title = "Streaming Configuration") {
+                var qualityExpanded by remember { mutableStateOf(false) }
+                val qualityOptions = StreamQuality.values()
+                
+                ExposedDropdownMenuBox(
+                    expanded = qualityExpanded,
+                    onExpandedChange = { qualityExpanded = !qualityExpanded }
+                ) {
+                    OutlinedTextField(
+                        value = selectedQuality.displayName,
                         onValueChange = { },
                         readOnly = true,
-                        label = { Text("Recording Quality") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                        label = { Text("Stream Quality") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = qualityExpanded) },
                         modifier = Modifier
                             .menuAnchor()
-                            .fillMaxWidth()
+                            .fillMaxWidth(),
+                        supportingText = { 
+                            Text("${selectedQuality.width}x${selectedQuality.height} @ ${selectedQuality.fps}fps")
+                        }
                     )
                     ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
+                        expanded = qualityExpanded,
+                        onDismissRequest = { qualityExpanded = false }
                     ) {
                         qualityOptions.forEach { quality ->
                             DropdownMenuItem(
-                                text = { Text(quality) },
+                                text = { 
+                                    Column {
+                                        Text(quality.displayName)
+                                        Text(
+                                            "${quality.width}x${quality.height} @ ${quality.fps}fps",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                },
                                 onClick = {
-                                    recordingQuality = quality
-                                    expanded = false
+                                    selectedQuality = quality
+                                    // Update bitrate based on quality
+                                    maxBitrate = quality.bitrate.toString()
+                                    qualityExpanded = false
                                 }
                             )
                         }
                     }
+                }
+                
+                OutlinedTextField(
+                    value = maxBitrate,
+                    onValueChange = { 
+                        maxBitrate = it.filter { char -> char.isDigit() }
+                        bitrateError = null
+                    },
+                    label = { Text("Max Bitrate (bps)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("2000000") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    supportingText = { 
+                        val mbps = maxBitrate.toIntOrNull()?.let { it / 1_000_000.0 } ?: 0.0
+                        Text(bitrateError ?: "≈ %.1f Mbps".format(mbps))
+                    },
+                    isError = bitrateError != null
+                )
+                
+                // Audio Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = enableAudio,
+                        onCheckedChange = { enableAudio = it }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Enable Audio")
                 }
                 
                 Card(
@@ -213,8 +328,63 @@ fun SettingsScreen(
             ) {
                 Button(
                     onClick = { 
-                        // TODO: Implement save settings
-                        onNavigateBack()
+                        // Validate and save configuration
+                        var hasErrors = false
+                        
+                        // Reset all errors
+                        serverUrlError = null
+                        portError = null
+                        passwordError = null
+                        bitrateError = null
+                        
+                        // Validate port
+                        val portInt = port.toIntOrNull()
+                        if (portInt == null || portInt !in 1..65535) {
+                            portError = "Port must be between 1 and 65535"
+                            hasErrors = true
+                        }
+                        
+                        // Validate bitrate
+                        val bitrateInt = maxBitrate.toIntOrNull()
+                        if (bitrateInt == null || bitrateInt < 100000 || bitrateInt > 10000000) {
+                            bitrateError = "Bitrate must be between 100 Kbps and 10 Mbps"
+                            hasErrors = true
+                        }
+                        
+                        // Validate server URL
+                        if (serverUrl.isBlank()) {
+                            serverUrlError = "Server URL is required"
+                            hasErrors = true
+                        }
+                        
+                        // Validate authentication fields
+                        if (useAuthentication) {
+                            if (username.isBlank()) {
+                                hasErrors = true
+                            }
+                            if (password.length < 8) {
+                                passwordError = "Password must be at least 8 characters"
+                                hasErrors = true
+                            }
+                        }
+                        
+                        if (!hasErrors) {
+                            // Create and validate RTSPConfig
+                            val config = RTSPConfig(
+                                serverUrl = if (serverUrl.startsWith("rtsp://")) serverUrl else "rtsp://$serverUrl",
+                                username = if (useAuthentication) username else "",
+                                password = if (useAuthentication) password else "",
+                                port = portInt ?: 554,
+                                streamPath = streamPath,
+                                quality = selectedQuality,
+                                enableAudio = enableAudio,
+                                maxBitrate = bitrateInt ?: 2000000,
+                                useAuthentication = useAuthentication
+                            )
+                            
+                            onSaveConfig(config)
+                            onNavigateBack()
+                        }
                     },
                     modifier = Modifier.weight(1f)
                 ) {

@@ -8,7 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,6 +23,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.catchmestreaming.ui.theme.CatchMeStreamingTheme
 import com.example.catchmestreaming.viewmodel.MainViewModel
+import com.example.catchmestreaming.data.StreamState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,6 +56,16 @@ fun MainScreen(
         LaunchedEffect(error) {
             // Clear error after showing it
             viewModel.clearError()
+        }
+    }
+    
+    // Handle stream errors separately
+    if (uiState.streamState.isError) {
+        val streamError = uiState.streamState as StreamState.Error
+        LaunchedEffect(streamError) {
+            // Auto-clear stream errors after delay
+            kotlinx.coroutines.delay(5000)
+            viewModel.clearStreamError()
         }
     }
     
@@ -180,7 +191,12 @@ fun MainScreen(
                         StatusItem(
                             label = "Streaming",
                             isActive = uiState.isStreaming,
-                            color = if (uiState.isStreaming) Color.Blue else Color.Gray
+                            color = when {
+                                uiState.streamState.isStreaming -> Color.Green
+                                uiState.streamState.isPreparing -> MaterialTheme.colorScheme.primary
+                                uiState.streamState.isError -> Color.Red
+                                else -> Color.Gray
+                            }
                         )
                         StatusItem(
                             label = "Recording",
@@ -189,12 +205,42 @@ fun MainScreen(
                         )
                     }
                     
+                    // Stream state information
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Stream: ${uiState.streamState.getDisplayMessage()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = when {
+                            uiState.streamState.isError -> MaterialTheme.colorScheme.error
+                            uiState.streamState.isStreaming -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                    
+                    uiState.streamingDuration?.let { duration ->
+                        Text(
+                            "Duration: $duration",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    
                     uiState.rtspUrl?.let { url ->
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             "RTSP URL: $url",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    
+                    // Show RTSP config status
+                    if (uiState.rtspConfig == null) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "⚠️ RTSP not configured - Go to Settings",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
                         )
                     }
                     
@@ -220,16 +266,34 @@ fun MainScreen(
             ) {
                 // Stream Button
                 FloatingActionButton(
-                    onClick = { viewModel.toggleStreaming() },
-                    containerColor = if (uiState.isStreaming) 
-                        MaterialTheme.colorScheme.error 
-                    else 
-                        MaterialTheme.colorScheme.primary,
+                    onClick = { 
+                        if (uiState.streamState.canStart) {
+                            viewModel.startStreaming()
+                        } else if (uiState.streamState.canStop) {
+                            viewModel.stopStreaming()
+                        }
+                    },
+                    containerColor = when {
+                        uiState.streamState.isStreaming -> MaterialTheme.colorScheme.error
+                        uiState.streamState.isPreparing -> MaterialTheme.colorScheme.secondary
+                        uiState.streamState.canStart -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.outline
+                    },
                     modifier = Modifier.size(72.dp)
                 ) {
+                    val icon = when {
+                        uiState.streamState.isStreaming -> Icons.Default.Close
+                        uiState.streamState.isPreparing -> Icons.Default.Refresh
+                        else -> Icons.Default.PlayArrow
+                    }
+                    
                     Icon(
-                        Icons.Default.Settings,
-                        contentDescription = if (uiState.isStreaming) "Stop Stream" else "Start Stream",
+                        icon,
+                        contentDescription = when {
+                            uiState.streamState.isStreaming -> "Stop Stream"
+                            uiState.streamState.isPreparing -> "Starting..."
+                            else -> "Start Stream"
+                        },
                         modifier = Modifier.size(32.dp)
                     )
                 }

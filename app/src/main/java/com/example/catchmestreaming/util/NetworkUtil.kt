@@ -91,6 +91,14 @@ object NetworkUtil {
         return "192.168.1.100"
     }
     
+    /**
+     * Static method for getting local IP address without context
+     * @return IP address as string or null if not available
+     */
+    fun getLocalIPAddress(): String? {
+        return getIpFromNetworkInterface()
+    }
+    
     private fun formatIpAddress(ipAddress: Int): String {
         return "${ipAddress and 0xFF}.${(ipAddress shr 8) and 0xFF}.${(ipAddress shr 16) and 0xFF}.${(ipAddress shr 24) and 0xFF}"
     }

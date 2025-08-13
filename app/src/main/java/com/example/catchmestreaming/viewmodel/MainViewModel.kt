@@ -9,6 +9,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewModelScope
 import com.example.catchmestreaming.repository.CameraRepository
+import com.example.catchmestreaming.repository.StreamRepository
+import com.example.catchmestreaming.data.RTSPConfig
+import com.example.catchmestreaming.data.StreamState
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -21,12 +24,16 @@ data class MainUiState(
     val hasAudioPermission: Boolean = false,
     val error: String? = null,
     val rtspUrl: String? = null,
-    val canSwitchCamera: Boolean = false
+    val canSwitchCamera: Boolean = false,
+    val streamState: StreamState = StreamState.Idle,
+    val rtspConfig: RTSPConfig? = null,
+    val streamingDuration: String? = null
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     private val cameraRepository = CameraRepository(application)
+    private val streamRepository = StreamRepository(application)
     
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -37,6 +44,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         checkPermissions()
         observeCameraState()
+        observeStreamState()
     }
     
     private fun checkPermissions() {
@@ -68,6 +76,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isCameraPreviewStarted = cameraState.isPreviewStarted,
                     error = cameraState.error,
                     canSwitchCamera = cameraState.availableCameras.size > 1
+                )
+            }
+        }
+    }
+    
+    private fun observeStreamState() {
+        viewModelScope.launch {
+            streamRepository.streamState.collect { streamState ->
+                val isStreaming = streamState.isStreaming
+                val rtspUrl = if (streamState is StreamState.Streaming) {
+                    streamState.rtspUrl
+                } else null
+                
+                val duration = if (streamState is StreamState.Streaming) {
+                    streamState.getFormattedDuration()
+                } else null
+                
+                _uiState.value = _uiState.value.copy(
+                    streamState = streamState,
+                    isStreaming = isStreaming,
+                    rtspUrl = rtspUrl,
+                    streamingDuration = duration,
+                    rtspConfig = streamRepository.getCurrentConfig()
                 )
             }
         }
@@ -169,18 +200,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     
-    fun toggleStreaming() {
-        val newStreamingState = !_uiState.value.isStreaming
-        _uiState.value = _uiState.value.copy(
-            isStreaming = newStreamingState,
-            rtspUrl = if (newStreamingState) "rtsp://192.168.1.100:8554/stream" else null
-        )
+    fun startStreaming() {
+        if (!_uiState.value.hasCameraPermission) {
+            requestPermissions()
+            return
+        }
         
-        // TODO: Implement actual RTSP streaming logic
-        if (newStreamingState) {
-            // Start streaming
-        } else {
-            // Stop streaming
+        viewModelScope.launch {
+            val result = streamRepository.startStreaming()
+            if (result.isFailure) {
+                val error = result.exceptionOrNull()?.message ?: "Unknown streaming error"
+                _uiState.value = _uiState.value.copy(error = error)
+            }
+        }
+    }
+    
+    fun stopStreaming() {
+        viewModelScope.launch {
+            val result = streamRepository.stopStreaming()
+            if (result.isFailure) {
+                val error = result.exceptionOrNull()?.message ?: "Unknown error stopping stream"
+                _uiState.value = _uiState.value.copy(error = error)
+            }
+        }
+    }
+    
+    fun updateRTSPConfig(config: RTSPConfig) {
+        viewModelScope.launch {
+            val result = streamRepository.updateConfiguration(config)
+            if (result.isFailure) {
+                val error = result.exceptionOrNull()?.message ?: "Configuration update failed"
+                _uiState.value = _uiState.value.copy(error = error)
+            }
+        }
+    }
+    
+    fun clearStreamError() {
+        viewModelScope.launch {
+            streamRepository.clearError()
         }
     }
     
@@ -203,5 +260,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         cameraRepository.release()
+        streamRepository.cleanup()
     }
 }

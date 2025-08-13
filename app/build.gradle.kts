@@ -71,8 +71,8 @@ dependencies {
     // Security
     implementation(libs.androidx.security.crypto)
     
-    // GStreamer (placeholder - will be added via native integration)
-    // implementation files("libs/gstreamer-1.0-android-universal.jar")
+    // RTSP Streaming with RootEncoder
+    implementation("com.github.pedroSG94.RootEncoder:library:2.6.1")
     
     // Testing dependencies
     testImplementation(libs.junit)
