@@ -37,6 +37,13 @@ android {
     buildFeatures {
         compose = true
     }
+    
+    packaging {
+        resources {
+            excludes += "META-INF/INDEX.LIST"
+            excludes += "META-INF/io.netty.versions.properties"
+        }
+    }
 }
 
 dependencies {
@@ -71,8 +78,10 @@ dependencies {
     // Security
     implementation(libs.androidx.security.crypto)
     
-    // RTSP Streaming with RootEncoder
-    implementation("com.github.pedroSG94.RootEncoder:library:2.6.1")
+    // Streaming server implementation
+    implementation("io.ktor:ktor-server-netty:2.3.5")
+    implementation("io.ktor:ktor-server-core:2.3.5")
+    implementation("io.ktor:ktor-server-websockets:2.3.5")
     
     // Testing dependencies
     testImplementation(libs.junit)

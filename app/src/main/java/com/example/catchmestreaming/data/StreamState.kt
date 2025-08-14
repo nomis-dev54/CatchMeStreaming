@@ -1,7 +1,7 @@
 package com.example.catchmestreaming.data
 
 /**
- * Sealed class representing all possible states of RTSP streaming.
+ * Sealed class representing all possible states of HTTP streaming.
  * Provides type-safe state management for the streaming functionality.
  */
 sealed class StreamState {
@@ -22,7 +22,7 @@ sealed class StreamState {
      * Currently streaming
      */
     data class Streaming(
-        val rtspUrl: String,
+        val streamUrl: String,
         val startTime: Long = System.currentTimeMillis(),
         val quality: StreamQuality,
         val audioEnabled: Boolean = true
@@ -83,9 +83,9 @@ sealed class StreamState {
                 StreamErrorCode.AUTHENTICATION_FAILED -> "Authentication failed. Verify your credentials."
                 StreamErrorCode.CAMERA_ERROR -> "Camera access failed. Check camera permissions."
                 StreamErrorCode.ENCODER_ERROR -> "Video encoder failed. Try reducing quality settings."
-                StreamErrorCode.CONFIGURATION_ERROR -> "Invalid configuration. Check your RTSP settings."
+                StreamErrorCode.CONFIGURATION_ERROR -> "Invalid configuration. Check your streaming settings."
                 StreamErrorCode.PERMISSION_DENIED -> "Required permissions not granted."
-                StreamErrorCode.SERVER_UNREACHABLE -> "RTSP server is unreachable. Check server address and port."
+                StreamErrorCode.SERVER_UNREACHABLE -> "Streaming server is unreachable. Check server address and port."
                 StreamErrorCode.UNKNOWN -> errorMessage
             }
         }
@@ -111,7 +111,7 @@ sealed class StreamState {
         return when (this) {
             is Idle -> "Ready to stream"
             is Preparing -> message
-            is Streaming -> "Streaming to $rtspUrl"
+            is Streaming -> "Streaming to $streamUrl"
             is Stopping -> message
             is Stopped -> reason
             is Error -> getUserMessage()

@@ -32,7 +32,7 @@ class InputValidator {
         private val CONTROL_CHARS = listOf('\r', '\n', '\t')
     }
     
-    fun validateRTSPUrl(url: String): ValidationResult {
+    fun validateHttpUrl(url: String): ValidationResult {
         if (url.isBlank()) {
             return ValidationResult(false, "URL cannot be empty")
         }
@@ -49,9 +49,9 @@ class InputValidator {
         return try {
             val uri = URI(url)
             
-            // Must be RTSP protocol
-            if (uri.scheme != "rtsp") {
-                return ValidationResult(false, "Must use RTSP protocol")
+            // Must be HTTP protocol (or allow no scheme for IP addresses)
+            if (uri.scheme != null && uri.scheme != "http" && uri.scheme != "https") {
+                return ValidationResult(false, "Must use HTTP protocol")
             }
             
             // Validate host
@@ -176,6 +176,81 @@ class InputValidator {
         return MALICIOUS_PATTERNS.any { pattern ->
             pattern.matcher(input).find()
         }
+    }
+    
+    fun validateDirectoryPath(path: String): ValidationResult {
+        if (path.isBlank()) {
+            return ValidationResult(false, "Directory path cannot be empty")
+        }
+        
+        if (path.length > MAX_INPUT_LENGTH) {
+            return ValidationResult(false, "Directory path too long")
+        }
+        
+        // Check for malicious patterns
+        if (containsMaliciousContent(path)) {
+            return ValidationResult(false, "Potentially malicious content detected")
+        }
+        
+        // Check for path traversal
+        if (path.contains("../") || path.contains("..\\")) {
+            return ValidationResult(false, "Path traversal detected")
+        }
+        
+        // Validate against dangerous characters for file paths
+        val dangerousPathChars = listOf('<', '>', '"', '|', '?', '*', '\u0000')
+        if (path.any { it in dangerousPathChars }) {
+            return ValidationResult(false, "Invalid characters in path")
+        }
+        
+        return ValidationResult(true)
+    }
+    
+    fun sanitizeDirectoryPath(path: String): String {
+        return path.trim()
+            .take(MAX_INPUT_LENGTH)
+            .replace(Regex("[<>\"\\|\\?\\*\\u0000]"), "")
+            .replace(Regex("\\.\\./|\\.\\.\\\\/"), "")
+            .let { sanitizeInput(it) }
+    }
+    
+    fun validateFilename(filename: String): ValidationResult {
+        if (filename.isBlank()) {
+            return ValidationResult(false, "Filename cannot be empty")
+        }
+        
+        if (filename.length > 255) { // Max filename length on most filesystems
+            return ValidationResult(false, "Filename too long (max 255 characters)")
+        }
+        
+        // Check for malicious patterns
+        if (containsMaliciousContent(filename)) {
+            return ValidationResult(false, "Potentially malicious content detected")
+        }
+        
+        // Windows reserved names
+        val reservedNames = listOf("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", 
+            "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", 
+            "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9")
+        if (filename.uppercase() in reservedNames) {
+            return ValidationResult(false, "Reserved filename")
+        }
+        
+        // Invalid filename characters
+        val invalidChars = listOf('<', '>', ':', '"', '/', '\\', '|', '?', '*')
+        if (filename.any { it in invalidChars }) {
+            return ValidationResult(false, "Invalid characters in filename")
+        }
+        
+        return ValidationResult(true)
+    }
+    
+    fun sanitizeFilename(filename: String): String {
+        return filename.trim()
+            .take(255)
+            .replace(Regex("[<>:\"/\\\\|\\?\\*]"), "_")
+            .let { sanitizeInput(it) }
+            .let { if (it.isBlank()) "file" else it }
     }
     
     fun sanitizeForLogging(input: String): String {

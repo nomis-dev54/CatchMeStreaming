@@ -31,12 +31,12 @@ class StreamRepositoryTest {
     @MockK
     private lateinit var mockInputValidator: InputValidator
 
-    private val validRTSPConfig = RTSPConfig(
-        serverUrl = "rtsp://192.168.1.100",
+    private val validStreamConfig = StreamConfig(
+        serverUrl = "192.168.1.100",
         username = "testuser",
         password = "TestPass123!",
-        port = 554,
-        streamPath = "/live",
+        port = 8080,
+        streamPath = "/stream",
         quality = StreamQuality.MEDIUM,
         enableAudio = true,
         useAuthentication = true
@@ -48,7 +48,7 @@ class StreamRepositoryTest {
         context = RuntimeEnvironment.getApplication()
         
         // Setup default mock behaviors
-        every { mockInputValidator.validateRTSPUrl(any()) } returns ValidationResult(true)
+        every { mockInputValidator.validateStreamingUrl(any()) } returns ValidationResult(true)
         every { mockInputValidator.validatePassword(any()) } returns ValidationResult(true)
         every { mockInputValidator.validatePort(any()) } returns ValidationResult(true)
         every { mockInputValidator.sanitizeUsername(any()) } returns "testuser"
@@ -90,20 +90,20 @@ class StreamRepositoryTest {
     // ========== Configuration Tests ==========
 
     @Test
-    fun `should accept valid RTSP configuration`() = runTest {
+    fun `should accept valid streaming configuration`() = runTest {
         // When
-        val result = streamRepository.updateConfiguration(validRTSPConfig)
+        val result = streamRepository.updateConfiguration(validStreamConfig)
 
         // Then
         assertTrue("Should accept valid configuration", result.isSuccess)
-        assertEquals("Should store configuration", validRTSPConfig, streamRepository.getCurrentConfig())
+        assertEquals("Should store configuration", validStreamConfig, streamRepository.getCurrentConfig())
     }
 
     @Test
     fun `should reject configuration with invalid URL`() = runTest {
         // Given
-        every { mockInputValidator.validateRTSPUrl(any()) } returns ValidationResult(false, "Invalid URL")
-        val invalidConfig = validRTSPConfig.copy(serverUrl = "invalid-url")
+        every { mockInputValidator.validateStreamingUrl(any()) } returns ValidationResult(false, "Invalid URL")
+        val invalidConfig = validStreamConfig.copy(serverUrl = "invalid-url")
 
         // When
         val result = streamRepository.updateConfiguration(invalidConfig)
@@ -117,7 +117,7 @@ class StreamRepositoryTest {
     fun `should reject configuration with weak password when authentication enabled`() = runTest {
         // Given
         every { mockInputValidator.validatePassword(any()) } returns ValidationResult(false, "Weak password")
-        val weakPasswordConfig = validRTSPConfig.copy(password = "weak")
+        val weakPasswordConfig = validStreamConfig.copy(password = "weak")
 
         // When
         val result = streamRepository.updateConfiguration(weakPasswordConfig)
@@ -130,7 +130,7 @@ class StreamRepositoryTest {
     @Test
     fun `should accept configuration without authentication`() = runTest {
         // Given
-        val noAuthConfig = validRTSPConfig.copy(
+        val noAuthConfig = validStreamConfig.copy(
             useAuthentication = false,
             username = "",
             password = ""
@@ -147,7 +147,7 @@ class StreamRepositoryTest {
     @Test
     fun `should store credentials securely when authentication enabled`() = runTest {
         // When
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
 
         // Then
         verify { mockSecureStorage.storeCredentials("testuser", "TestPass123!") }
@@ -156,7 +156,7 @@ class StreamRepositoryTest {
     @Test
     fun `should not store credentials when authentication disabled`() = runTest {
         // Given
-        val noAuthConfig = validRTSPConfig.copy(useAuthentication = false)
+        val noAuthConfig = validStreamConfig.copy(useAuthentication = false)
 
         // When
         streamRepository.updateConfiguration(noAuthConfig)
@@ -170,7 +170,7 @@ class StreamRepositoryTest {
     @Test
     fun `should transition to preparing state when starting stream`() = runTest {
         // Given
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
 
         // When
         streamRepository.startStreaming()
@@ -194,7 +194,7 @@ class StreamRepositoryTest {
     @Test
     fun `should reject start streaming when already active`() = runTest {
         // Given
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
         streamRepository.startStreaming()
 
         // When
@@ -208,7 +208,7 @@ class StreamRepositoryTest {
     fun `should handle streaming preparation failure gracefully`() = runTest {
         // Given
         every { mockSecureStorage.retrieveCredentials() } returns Result.failure(Exception("Storage error"))
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
 
         // When
         streamRepository.startStreaming()
@@ -225,7 +225,7 @@ class StreamRepositoryTest {
     @Test
     fun `should transition to stopped state when stopping stream`() = runTest {
         // Given
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
         streamRepository.startStreaming()
 
         // When
@@ -253,21 +253,21 @@ class StreamRepositoryTest {
     fun `should validate URL before starting stream`() = runTest {
         // Given
         every { mockInputValidator.validateRTSPUrl(any()) } returns ValidationResult(false, "Malicious URL")
-        val maliciousConfig = validRTSPConfig.copy(serverUrl = "rtsp://malicious.com/../admin")
+        val maliciousConfig = validStreamConfig.copy(serverUrl = "http://malicious.com/../admin")
 
         // When
         streamRepository.updateConfiguration(maliciousConfig)
 
         // Then
-        verify { mockInputValidator.validateRTSPUrl("rtsp://malicious.com/../admin") }
+        verify { mockInputValidator.validateStreamingUrl("http://malicious.com/../admin") }
     }
 
     @Test
     fun `should prevent streaming with malicious stream path`() = runTest {
         // Given
-        every { mockInputValidator.containsMaliciousContent("/live") } returns false
-        every { mockInputValidator.containsMaliciousContent("/live/../admin") } returns true
-        val maliciousConfig = validRTSPConfig.copy(streamPath = "/live/../admin")
+        every { mockInputValidator.containsMaliciousContent("/stream") } returns false
+        every { mockInputValidator.containsMaliciousContent("/stream/../admin") } returns true
+        val maliciousConfig = validStreamConfig.copy(streamPath = "/stream/../admin")
 
         // When
         val result = streamRepository.updateConfiguration(maliciousConfig)
@@ -279,7 +279,7 @@ class StreamRepositoryTest {
     @Test
     fun `should validate credentials before streaming`() = runTest {
         // Given
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
 
         // When
         streamRepository.startStreaming()
@@ -292,7 +292,7 @@ class StreamRepositoryTest {
     fun `should handle credential retrieval failure securely`() = runTest {
         // Given
         every { mockSecureStorage.retrieveCredentials() } returns Result.failure(Exception("Access denied"))
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
 
         // When
         streamRepository.startStreaming()
@@ -311,11 +311,11 @@ class StreamRepositoryTest {
     @Test
     fun `should clear stored credentials when disabling authentication`() = runTest {
         // Given
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
         every { mockSecureStorage.deleteCredentials() } returns Result.success(Unit)
 
         // When
-        val noAuthConfig = validRTSPConfig.copy(useAuthentication = false)
+        val noAuthConfig = validStreamConfig.copy(useAuthentication = false)
         streamRepository.updateConfiguration(noAuthConfig)
 
         // Then
@@ -325,11 +325,11 @@ class StreamRepositoryTest {
     @Test
     fun `should update credentials when changing authentication details`() = runTest {
         // Given
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
         clearMocks(mockSecureStorage)
 
         // When
-        val updatedConfig = validRTSPConfig.copy(
+        val updatedConfig = validStreamConfig.copy(
             username = "newuser",
             password = "NewPass456!"
         )
@@ -345,7 +345,7 @@ class StreamRepositoryTest {
     fun `should handle network configuration validation`() = runTest {
         // Given
         every { mockInputValidator.validatePort(9999) } returns ValidationResult(false, "Invalid port")
-        val invalidPortConfig = validRTSPConfig.copy(port = 9999)
+        val invalidPortConfig = validStreamConfig.copy(port = 9999)
 
         // When
         val result = streamRepository.updateConfiguration(invalidPortConfig)
@@ -357,7 +357,7 @@ class StreamRepositoryTest {
     @Test
     fun `should validate streaming quality parameters`() = runTest {
         // Given
-        val configWithInvalidBitrate = validRTSPConfig.copy(maxBitrate = 50000) // Too low
+        val configWithInvalidBitrate = validStreamConfig.copy(maxBitrate = 50000) // Too low
 
         // When
         val result = streamRepository.updateConfiguration(configWithInvalidBitrate)
@@ -369,7 +369,7 @@ class StreamRepositoryTest {
     @Test
     fun `should handle concurrent state changes safely`() = runTest {
         // Given
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
 
         // When - simulate concurrent start/stop calls
         val startResult1 = streamRepository.startStreaming()
@@ -385,8 +385,8 @@ class StreamRepositoryTest {
     @Test
     fun `should provide detailed error information for debugging`() = runTest {
         // Given
-        every { mockInputValidator.validateRTSPUrl(any()) } returns ValidationResult(false, "Test validation error")
-        val invalidConfig = validRTSPConfig.copy(serverUrl = "invalid")
+        every { mockInputValidator.validateStreamingUrl(any()) } returns ValidationResult(false, "Test validation error")
+        val invalidConfig = validStreamConfig.copy(serverUrl = "invalid")
 
         // When
         streamRepository.updateConfiguration(invalidConfig)
@@ -399,49 +399,49 @@ class StreamRepositoryTest {
     // ========== Streaming URL Generation Tests ==========
 
     @Test
-    fun `should generate correct RTSP URL with authentication`() = runTest {
+    fun `should generate correct HTTP streaming URL with authentication`() = runTest {
         // Given
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
 
         // When
-        val generatedUrl = validRTSPConfig.generateRTSPUrl()
+        val generatedUrl = validStreamConfig.generateStreamingUrl()
 
         // Then
         assertTrue("Should contain username and password", 
             generatedUrl.contains("testuser:TestPass123!"))
         assertTrue("Should contain server and port", 
-            generatedUrl.contains("192.168.1.100:554"))
+            generatedUrl.contains("192.168.1.100:8080"))
         assertTrue("Should contain stream path", 
-            generatedUrl.contains("/live"))
+            generatedUrl.contains("/stream"))
     }
 
     @Test
-    fun `should generate correct RTSP URL without authentication`() = runTest {
+    fun `should generate correct HTTP streaming URL without authentication`() = runTest {
         // Given
-        val noAuthConfig = validRTSPConfig.copy(useAuthentication = false)
+        val noAuthConfig = validStreamConfig.copy(useAuthentication = false)
         streamRepository.updateConfiguration(noAuthConfig)
 
         // When
-        val generatedUrl = noAuthConfig.generateRTSPUrl()
+        val generatedUrl = noAuthConfig.generateStreamingUrl()
 
         // Then
         assertFalse("Should not contain credentials", generatedUrl.contains("testuser"))
         assertFalse("Should not contain credentials", generatedUrl.contains("TestPass123!"))
         assertTrue("Should contain server and port", 
-            generatedUrl.contains("192.168.1.100:554"))
+            generatedUrl.contains("192.168.1.100:8080"))
     }
 
     @Test
     fun `should generate safe display URL without credentials`() = runTest {
         // Given
-        streamRepository.updateConfiguration(validRTSPConfig)
+        streamRepository.updateConfiguration(validStreamConfig)
 
         // When
-        val displayUrl = validRTSPConfig.generateDisplayUrl()
+        val displayUrl = validStreamConfig.generateDisplayUrl()
 
         // Then
         assertFalse("Should not expose credentials", displayUrl.contains("testuser"))
         assertFalse("Should not expose credentials", displayUrl.contains("TestPass123!"))
-        assertTrue("Should contain server info", displayUrl.contains("192.168.1.100:554"))
+        assertTrue("Should contain server info", displayUrl.contains("192.168.1.100:8080"))
     }
 }

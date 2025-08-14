@@ -24,6 +24,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.catchmestreaming.ui.theme.CatchMeStreamingTheme
 import com.example.catchmestreaming.viewmodel.MainViewModel
 import com.example.catchmestreaming.data.StreamState
+import com.example.catchmestreaming.data.RecordingState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -225,20 +226,57 @@ fun MainScreen(
                         )
                     }
                     
-                    uiState.rtspUrl?.let { url ->
+                    uiState.streamUrl?.let { url ->
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "RTSP URL: $url",
+                            "Stream URL: $url",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
                     
-                    // Show RTSP config status
-                    if (uiState.rtspConfig == null) {
+                    // Show recording duration and file info
+                    uiState.recordingDuration?.let { duration ->
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "⚠️ RTSP not configured - Go to Settings",
+                            "Recording: $duration",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    
+                    uiState.recordingFileSize?.let { fileSize ->
+                        Text(
+                            "File Size: $fileSize",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    
+                    uiState.availableStorage?.let { storage ->
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Available: $storage",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    
+                    // Show streaming config status
+                    if (uiState.streamConfig == null) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "⚠️ Streaming not configured - Go to Settings",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    
+                    // Show recording config status
+                    if (uiState.recordingConfig == null) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "⚠️ Recording not configured - Go to Settings",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
                         )

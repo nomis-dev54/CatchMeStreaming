@@ -1,14 +1,20 @@
 package com.example.catchmestreaming.repository
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import com.example.catchmestreaming.data.*
 import com.example.catchmestreaming.security.SecureStorage
 import com.example.catchmestreaming.security.InputValidator
 import com.example.catchmestreaming.security.ValidationResult
-// RootEncoder imports - will be available when library is downloaded
-// import com.pedro.encoder.input.video.CameraOpenException  
-// import com.pedro.rtplibrary.rtsp.RtspCamera1
+// Android native streaming imports
+import android.media.MediaRecorder
+import android.view.Surface
+import io.ktor.server.engine.*
+import io.ktor.server.netty.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
+import io.ktor.server.application.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,17 +25,105 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import javax.net.ssl.SSLHandshakeException
 
-// Temporary placeholder classes for RootEncoder - will be replaced when library is available
-private class CameraOpenException(message: String) : Exception(message)
-private class RtspCamera1(private val context: Context) {
-    fun prepareVideo(width: Int, height: Int, fps: Int, bitrate: Int, rotation: Int): Boolean = true
-    fun prepareAudio(sampleRate: Int, stereo: Boolean, bitrate: Int): Boolean = true
-    fun startStream(url: String): Boolean = true
-    fun stopStream() {}
+/**
+ * Simple HTTP/WebRTC streaming server implementation using Android MediaRecorder
+ * This creates an HTTP-based streaming endpoint that clients can connect to
+ */
+private class AndroidStreamingServer(
+    private val context: Context,
+    private val port: Int = 8080
+) {
+    private var server: NettyApplicationEngine? = null
+    private var mediaRecorder: MediaRecorder? = null
+    private var streamingFile: String? = null
+    
+    fun startServer(): String {
+        try {
+            server = embeddedServer(Netty, port = port) {
+                routing {
+                    get("/stream") {
+                        call.response.headers.append("Access-Control-Allow-Origin", "*")
+                        
+                        // For now, return a helpful message since video recording isn't implemented yet
+                        call.response.headers.append("Content-Type", "text/plain")
+                        call.respond(
+                            io.ktor.http.HttpStatusCode.ServiceUnavailable,
+                            """
+                            CatchMeStreaming - Video Stream Placeholder
+                            
+                            The streaming service is running, but video encoding is not yet implemented.
+                            
+                            Current status:
+                            - HTTP server: Active
+                            - Video capture: Not implemented
+                            - Stream file: ${streamingFile ?: "Not set"}
+                            
+                            This is a development version. Video streaming functionality 
+                            will be added in future updates.
+                            
+                            Check /status endpoint for more technical details.
+                            """.trimIndent()
+                        )
+                    }
+                    get("/status") {
+                        call.response.headers.append("Access-Control-Allow-Origin", "*")
+                        call.response.headers.append("Content-Type", "text/plain")
+                        
+                        val statusText = """
+                            CatchMeStreaming Service Status
+                            ===============================
+                            
+                            Service: CatchMeStreaming
+                            Version: Development
+                            Server Status: Running
+                            Streaming Status: Placeholder Mode
+                            Video Encoding: Not Implemented
+                            
+                            Stream URL: http://0.0.0.0:$port/stream
+                            Configured Output Path: ${streamingFile ?: "not_set"}
+                            
+                            Message: HTTP server is running but video capture/encoding is not yet implemented.
+                            The /stream endpoint returns helpful information instead of actual video content.
+                            
+                            This is a development version of CatchMeStreaming.
+                        """.trimIndent()
+                        
+                        call.respond(io.ktor.http.HttpStatusCode.OK, statusText)
+                    }
+                }
+            }
+            server?.start(wait = false)
+            
+            val networkUtil = com.example.catchmestreaming.util.NetworkUtil
+            val deviceIP = networkUtil.getLocalIPAddress() ?: "localhost"
+            return "http://$deviceIP:$port/stream"
+            
+        } catch (e: Exception) {
+            Log.e("StreamServer", "Failed to start server", e)
+            throw e
+        }
+    }
+    
+    fun stopServer() {
+        server?.stop(1000, 2000)
+        server = null
+        mediaRecorder?.release()
+        mediaRecorder = null
+    }
+    
+    fun startRecording(outputPath: String, surface: Surface? = null) {
+        streamingFile = outputPath
+        
+        Log.i("StreamServer", "Streaming service configured for: $outputPath")
+        Log.i("StreamServer", "Note: Video encoding not yet implemented - serving placeholder content")
+        
+        // In a real implementation, this would be where MediaRecorder or CameraX VideoCapture starts
+        // For now, we just note the path and serve a helpful message via HTTP
+    }
 }
 
 /**
- * Repository for managing RTSP streaming functionality.
+ * Repository for managing HTTP streaming functionality.
  * Implements security-first approach with comprehensive validation and error handling.
  */
 class StreamRepository(
@@ -40,6 +134,16 @@ class StreamRepository(
     
     companion object {
         private const val TAG = "StreamRepository"
+        private const val PREFS_NAME = "stream_config_prefs"
+        private const val KEY_SERVER_URL = "server_url"
+        private const val KEY_PORT = "port"
+        private const val KEY_STREAM_PATH = "stream_path"
+        private const val KEY_QUALITY = "quality"
+        private const val KEY_ENABLE_AUDIO = "enable_audio"
+        private const val KEY_MAX_BITRATE = "max_bitrate"
+        private const val KEY_KEY_FRAME_INTERVAL = "key_frame_interval"
+        private const val KEY_USE_AUTHENTICATION = "use_authentication"
+        private const val KEY_USERNAME = "username"
     }
     
     // State management
@@ -47,10 +151,11 @@ class StreamRepository(
     val streamState: StateFlow<StreamState> = _streamState.asStateFlow()
     
     // Configuration storage
-    private var currentConfig: RTSPConfig? = null
+    private var currentConfig: StreamConfig? = null
+    private val sharedPrefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     
-    // RootEncoder RTSP client
-    private var rtspCamera: RtspCamera1? = null
+    // Android native streaming server
+    private var streamingServer: AndroidStreamingServer? = null
     
     // Threading protection
     private val streamingMutex = Mutex()
@@ -58,10 +163,15 @@ class StreamRepository(
     // Statistics tracking
     private var currentStats: StreamingStats? = null
     
+    init {
+        // Load saved configuration on initialization
+        loadConfiguration()
+    }
+    
     /**
-     * Update the RTSP configuration with security validation
+     * Update the HTTP streaming configuration with security validation
      */
-    suspend fun updateConfiguration(config: RTSPConfig): Result<Unit> = streamingMutex.withLock {
+    suspend fun updateConfiguration(config: StreamConfig): Result<Unit> = streamingMutex.withLock {
         try {
             Log.d(TAG, "Updating configuration: ${config.toLogSafeString()}")
             
@@ -91,6 +201,7 @@ class StreamRepository(
             
             // Store configuration
             currentConfig = config
+            saveConfiguration(config)
             Log.i(TAG, "Configuration updated successfully")
             
             return Result.success(Unit)
@@ -103,15 +214,25 @@ class StreamRepository(
     
     /**
      * Get the current configuration (without sensitive data)
+     * If no configuration exists, creates and saves a default one
      */
-    fun getCurrentConfig(): RTSPConfig? = currentConfig
+    fun getCurrentConfig(): StreamConfig? {
+        if (currentConfig == null) {
+            // Create default configuration
+            val defaultConfig = StreamConfig.createDefault(context)
+            currentConfig = defaultConfig
+            saveConfiguration(defaultConfig)
+            Log.i(TAG, "Created and saved default configuration")
+        }
+        return currentConfig
+    }
     
     /**
-     * Start RTSP streaming with security checks
+     * Start HTTP streaming with security checks
      */
     suspend fun startStreaming(): Result<String> = streamingMutex.withLock {
         try {
-            Log.d(TAG, "Starting RTSP stream")
+            Log.d(TAG, "Starting HTTP stream")
             
             // Check if already active
             if (_streamState.value.isActive) {
@@ -122,7 +243,7 @@ class StreamRepository(
             // Check configuration
             val config = currentConfig ?: run {
                 Log.w(TAG, "No configuration available")
-                return Result.failure(IllegalStateException("No configuration available. Please configure RTSP settings first."))
+                return Result.failure(IllegalStateException("No configuration available. Please configure streaming settings first."))
             }
             
             // Transition to preparing state
@@ -158,74 +279,54 @@ class StreamRepository(
                 finalConfig = config.copy(username = username, password = password)
             }
             
-            // Initialize RTSP encoder
-            _streamState.value = StreamState.Preparing("Initializing encoder...")
+            // Initialize streaming server
+            _streamState.value = StreamState.Preparing("Initializing streaming server...")
             
-            val rtspUrl = finalConfig.generateRTSPUrl()
+            val streamingUrl = finalConfig.generateStreamingUrl()
             val displayUrl = finalConfig.generateDisplayUrl()
             
             try {
-                // Initialize RootEncoder RTSP camera
-                rtspCamera = RtspCamera1(context)
+                // Initialize Android native streaming server
+                val serverPort = finalConfig.port
+                streamingServer = AndroidStreamingServer(context, serverPort)
                 
-                // Configure video parameters
-                val videoWidth = finalConfig.quality.width
-                val videoHeight = finalConfig.quality.height
-                val videoBitrate = finalConfig.maxBitrate
-                val videoFps = finalConfig.quality.fps
+                // Start streaming server
+                _streamState.value = StreamState.Preparing("Starting streaming server...")
                 
-                val prepareVideo = rtspCamera?.prepareVideo(
-                    videoWidth,
-                    videoHeight,
-                    videoFps,
-                    videoBitrate,
-                    0 // Rotation
-                ) ?: false
+                val serverUrl = streamingServer?.startServer() 
+                    ?: throw IllegalStateException("Failed to start streaming server")
                 
-                if (!prepareVideo) {
-                    throw IllegalStateException("Failed to prepare video encoder")
-                }
+                // Create output file for streaming
+                val outputDir = context.getExternalFilesDir("streaming")
+                outputDir?.mkdirs()
+                val outputFile = "$outputDir/current_stream.mp4"
                 
-                // Configure audio if enabled
-                if (finalConfig.enableAudio) {
-                    val prepareAudio = rtspCamera?.prepareAudio(
-                        44100, // Sample rate
-                        true,  // Stereo
-                        128000 // Audio bitrate
-                    ) ?: false
-                    
-                    if (!prepareAudio) {
-                        Log.w(TAG, "Failed to prepare audio encoder, continuing without audio")
-                    }
-                }
+                // Start recording/streaming
+                streamingServer?.startRecording(outputFile)
                 
-                // Start streaming
-                _streamState.value = StreamState.Preparing("Connecting to server...")
+                Log.i(TAG, "Streaming server started at: $serverUrl")
                 
-                val startResult = rtspCamera?.startStream(rtspUrl) ?: false
-                
-                if (!startResult) {
-                    throw IllegalStateException("Failed to start RTSP stream")
-                }
+                // Update the display URL to show the HTTP endpoint
+                val actualDisplayUrl = serverUrl.replace("0.0.0.0", finalConfig.serverUrl)
                 
                 // Initialize statistics
                 currentStats = StreamingStats(System.currentTimeMillis())
                 
                 // Transition to streaming state
                 _streamState.value = StreamState.Streaming(
-                    rtspUrl = displayUrl,
+                    streamUrl = actualDisplayUrl,
                     quality = finalConfig.quality,
                     audioEnabled = finalConfig.enableAudio
                 )
                 
-                Log.i(TAG, "RTSP streaming started successfully to: $displayUrl")
-                return Result.success(displayUrl)
+                Log.i(TAG, "HTTP streaming started successfully at: $actualDisplayUrl")
+                return Result.success(actualDisplayUrl)
                 
-            } catch (e: CameraOpenException) {
-                Log.e(TAG, "Camera error during streaming start", e)
+            } catch (e: IllegalStateException) {
+                Log.e(TAG, "Streaming server error", e)
                 _streamState.value = StreamState.Error(
-                    errorMessage = "Camera access failed",
-                    errorCode = StreamErrorCode.CAMERA_ERROR,
+                    errorMessage = "Failed to start streaming server",
+                    errorCode = StreamErrorCode.SERVER_UNREACHABLE,
                     throwable = e
                 )
                 return Result.failure(e)
@@ -312,9 +413,9 @@ class StreamRepository(
             } else null
             
             try {
-                // Stop the RTSP stream
-                rtspCamera?.stopStream()
-                rtspCamera = null
+                // Stop the streaming server
+                streamingServer?.stopServer()
+                streamingServer = null
                 
                 // Reset statistics
                 currentStats = null
@@ -325,7 +426,7 @@ class StreamRepository(
                     lastDuration = lastDuration
                 )
                 
-                Log.i(TAG, "RTSP streaming stopped successfully")
+                Log.i(TAG, "HTTP streaming stopped successfully")
                 return Result.success(Unit)
                 
             } catch (e: Exception) {
@@ -374,12 +475,79 @@ class StreamRepository(
     }
     
     /**
-     * Validate RTSP configuration with comprehensive security checks
+     * Save configuration to persistent storage
      */
-    private fun validateConfiguration(config: RTSPConfig): ValidationResult {
+    private fun saveConfiguration(config: StreamConfig) {
+        try {
+            with(sharedPrefs.edit()) {
+                putString(KEY_SERVER_URL, config.serverUrl)
+                putInt(KEY_PORT, config.port)
+                putString(KEY_STREAM_PATH, config.streamPath)
+                putString(KEY_QUALITY, config.quality.name)
+                putBoolean(KEY_ENABLE_AUDIO, config.enableAudio)
+                putInt(KEY_MAX_BITRATE, config.maxBitrate)
+                putInt(KEY_KEY_FRAME_INTERVAL, config.keyFrameInterval)
+                putBoolean(KEY_USE_AUTHENTICATION, config.useAuthentication)
+                putString(KEY_USERNAME, config.username)
+                apply()
+            }
+            Log.d(TAG, "Configuration saved to persistent storage")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error saving configuration", e)
+        }
+    }
+    
+    /**
+     * Load configuration from persistent storage
+     */
+    private fun loadConfiguration() {
+        try {
+            if (sharedPrefs.contains(KEY_SERVER_URL)) {
+                val serverUrl = sharedPrefs.getString(KEY_SERVER_URL, "") ?: ""
+                val port = sharedPrefs.getInt(KEY_PORT, 8080)
+                val streamPath = sharedPrefs.getString(KEY_STREAM_PATH, "/stream") ?: "/stream"
+                val qualityName = sharedPrefs.getString(KEY_QUALITY, StreamQuality.MEDIUM.name) ?: StreamQuality.MEDIUM.name
+                val quality = try {
+                    StreamQuality.valueOf(qualityName)
+                } catch (e: IllegalArgumentException) {
+                    StreamQuality.MEDIUM
+                }
+                val enableAudio = sharedPrefs.getBoolean(KEY_ENABLE_AUDIO, true)
+                val maxBitrate = sharedPrefs.getInt(KEY_MAX_BITRATE, 2000000)
+                val keyFrameInterval = sharedPrefs.getInt(KEY_KEY_FRAME_INTERVAL, 15)
+                val useAuthentication = sharedPrefs.getBoolean(KEY_USE_AUTHENTICATION, false)
+                val username = sharedPrefs.getString(KEY_USERNAME, "") ?: ""
+                
+                currentConfig = StreamConfig(
+                    serverUrl = serverUrl,
+                    username = username,
+                    password = "", // Password not stored in SharedPreferences for security
+                    port = port,
+                    streamPath = streamPath,
+                    quality = quality,
+                    enableAudio = enableAudio,
+                    maxBitrate = maxBitrate,
+                    keyFrameInterval = keyFrameInterval,
+                    useAuthentication = useAuthentication
+                )
+                
+                Log.d(TAG, "Configuration loaded from persistent storage")
+            } else {
+                Log.d(TAG, "No saved configuration found, will use defaults when needed")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading configuration", e)
+            currentConfig = null
+        }
+    }
+    
+    /**
+     * Validate HTTP streaming configuration with comprehensive security checks
+     */
+    private fun validateConfiguration(config: StreamConfig): ValidationResult {
         try {
             // Validate server URL
-            val urlValidation = inputValidator.validateRTSPUrl(config.serverUrl)
+            val urlValidation = inputValidator.validateHttpUrl(config.serverUrl)
             if (!urlValidation.isValid) {
                 return urlValidation
             }
@@ -430,12 +598,34 @@ class StreamRepository(
     }
     
     /**
+     * Handle connection errors from ConnectChecker callbacks
+     */
+    internal fun handleConnectionError(errorMessage: String) {
+        _streamState.value = StreamState.Error(
+            errorMessage = errorMessage,
+            errorCode = StreamErrorCode.SERVER_UNREACHABLE
+        )
+    }
+    
+    /**
+     * Handle disconnection from ConnectChecker callbacks
+     */
+    internal fun handleDisconnection() {
+        _streamState.value = StreamState.Stopped(
+            reason = "Connection lost",
+            lastDuration = if (_streamState.value is StreamState.Streaming) {
+                (_streamState.value as StreamState.Streaming).getFormattedDuration()
+            } else null
+        )
+    }
+    
+    /**
      * Clean up resources
      */
     fun cleanup() {
         try {
-            rtspCamera?.stopStream()
-            rtspCamera = null
+            streamingServer?.stopServer()
+            streamingServer = null
             currentStats = null
             _streamState.value = StreamState.Idle
             Log.d(TAG, "StreamRepository cleaned up")

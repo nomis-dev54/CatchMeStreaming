@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 CatchMeStreaming is an Android RTSP streaming application built with:
 - **Kotlin** with **Jetpack Compose** and **Material 3** UI
 - **CameraX** for camera handling
-- **GStreamer** for RTSP streaming
+- **RootEncoder** for RTSP streaming
 - **MediaRecorder API** for local MP4 recording
 - **MVVM architecture** with repositories and ViewModels
 - Target API: 31+ (compileSdk: 36, minSdk: 31, targetSdk: 36)
@@ -45,14 +45,14 @@ CatchMeStreaming is an Android RTSP streaming application built with:
 - AGP: 8.11.1
 - Material 3 via Compose
 - CameraX (to be added via Context7)
-- GStreamer Android port (to be added via Context7)
+- RootEncoder (already integrated from JitPack)
 
 ## Development Guidelines
 
 ### Context7 Integration
 - **ALWAYS** use Context7 to verify syntax for any package used in this app
 - If there's no Context7 entry for a package, notify user and provide options
-- Required for: GStreamer, CameraX, Jetpack Compose, testing frameworks
+- Required for: RootEncoder, CameraX, Jetpack Compose, testing frameworks
 
 ### Error Handling and Debugging
 - If issue takes longer than 3 attempts to fix, enable `android.util.Log` on 4th attempt

@@ -4,7 +4,6 @@
 # ===== SECURITY RULES =====
 
 # Aggressive obfuscation - rename all classes, methods, and fields
--renaming
 -repackageclasses 'obfuscated'
 -allowaccessmodification
 -mergeinterfacesaggressively
