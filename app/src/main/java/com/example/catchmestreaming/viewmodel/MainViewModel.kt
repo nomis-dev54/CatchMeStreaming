@@ -331,9 +331,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         
         viewModelScope.launch {
-            val result = streamRepository.startStreaming()
-            if (result.isFailure) {
-                val error = result.exceptionOrNull()?.message ?: "Unknown streaming error"
+            // Ensure camera is initialized and preview is started
+            if (!_uiState.value.isCameraInitialized) {
+                val initResult = cameraRepository.initializeCamera()
+                if (initResult.isFailure) {
+                    val error = initResult.exceptionOrNull()?.message ?: "Failed to initialize camera"
+                    _uiState.value = _uiState.value.copy(error = error)
+                    return@launch
+                }
+            }
+            
+            // Start the HTTP streaming server
+            val streamResult = streamRepository.startStreaming()
+            if (streamResult.isFailure) {
+                val error = streamResult.exceptionOrNull()?.message ?: "Unknown streaming error"
+                _uiState.value = _uiState.value.copy(error = error)
+                return@launch
+            }
+            
+            // Enable live streaming from camera to HTTP server
+            val liveStreamResult = cameraRepository.enableLiveStreaming { jpegBytes ->
+                streamRepository.updateLiveFrame(jpegBytes)
+            }
+            
+            if (liveStreamResult.isFailure) {
+                val error = liveStreamResult.exceptionOrNull()?.message ?: "Failed to enable live streaming"
                 _uiState.value = _uiState.value.copy(error = error)
             }
         }
@@ -341,6 +363,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     fun stopStreaming() {
         viewModelScope.launch {
+            // Disable live streaming from camera first
+            cameraRepository.disableLiveStreaming()
+            
+            // Stop the HTTP streaming server
             val result = streamRepository.stopStreaming()
             if (result.isFailure) {
                 val error = result.exceptionOrNull()?.message ?: "Unknown error stopping stream"

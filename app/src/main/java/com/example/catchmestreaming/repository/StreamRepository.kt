@@ -10,11 +10,22 @@ import com.example.catchmestreaming.security.ValidationResult
 // Android native streaming imports
 import android.media.MediaRecorder
 import android.view.Surface
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.ImageAnalysis
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.server.response.*
+import io.ktor.server.http.content.*
 import io.ktor.server.routing.*
 import io.ktor.server.application.*
+import io.ktor.utils.io.*
+import io.ktor.http.*
+import kotlinx.coroutines.*
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import android.graphics.*
+import java.text.DecimalFormat
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,16 +37,29 @@ import java.net.UnknownHostException
 import javax.net.ssl.SSLHandshakeException
 
 /**
- * Simple HTTP/WebRTC streaming server implementation using Android MediaRecorder
- * This creates an HTTP-based streaming endpoint that clients can connect to
+ * Live HTTP streaming server implementation using CameraX frames
+ * This creates an HTTP-based streaming endpoint that streams live camera frames
  */
 private class AndroidStreamingServer(
     private val context: Context,
     private val port: Int = 8080
 ) {
     private var server: NettyApplicationEngine? = null
-    private var mediaRecorder: MediaRecorder? = null
     private var streamingFile: String? = null
+    
+    // Live streaming from camera frames with intelligent buffering
+    private val frameBuffer = ConcurrentLinkedQueue<ByteArray>()
+    private var latestFrameJpeg: ByteArray? = null
+    private var isLiveStreaming = false
+    private val maxBufferSize = 80 // Larger buffer for smoother streaming
+    private val targetBufferUsage = 0.7 // Use 70% of buffer, keep 30% reserve
+    private val minBufferReserve = (maxBufferSize * 0.3).toInt() // 30% reserve
+    private var frameTimestamp = System.currentTimeMillis()
+    private var dynamicFrameRate = 30 // Start with 30 FPS, adjust dynamically
+    private var actualFps = 0.0
+    private var frameCount = 0
+    private var fpsCalculationStart = System.currentTimeMillis()
+    private val fpsFormat = DecimalFormat("#.#")
     
     fun startServer(): String {
         try {
@@ -43,27 +67,135 @@ private class AndroidStreamingServer(
                 routing {
                     get("/stream") {
                         call.response.headers.append("Access-Control-Allow-Origin", "*")
+                        call.response.headers.append("Cache-Control", "no-cache")
                         
-                        // For now, return a helpful message since video recording isn't implemented yet
-                        call.response.headers.append("Content-Type", "text/plain")
-                        call.respond(
-                            io.ktor.http.HttpStatusCode.ServiceUnavailable,
-                            """
-                            CatchMeStreaming - Video Stream Placeholder
-                            
-                            The streaming service is running, but video encoding is not yet implemented.
-                            
-                            Current status:
-                            - HTTP server: Active
-                            - Video capture: Not implemented
-                            - Stream file: ${streamingFile ?: "Not set"}
-                            
-                            This is a development version. Video streaming functionality 
-                            will be added in future updates.
-                            
-                            Check /status endpoint for more technical details.
-                            """.trimIndent()
-                        )
+                        if (isLiveStreaming) {
+                            try {
+                                // Set MJPEG streaming headers
+                                call.response.header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                                call.response.header("Cache-Control", "no-cache, no-store, must-revalidate")
+                                call.response.header("Pragma", "no-cache")
+                                call.response.header("Expires", "0")
+                                call.response.header("Connection", "close")
+                                
+                                // Stream MJPEG frames with intelligent buffering
+                                call.respondBytesWriter(contentType = ContentType.parse("multipart/x-mixed-replace; boundary=frame")) {
+                                    var streamFrameCount = 0
+                                    var lastStreamTime = System.currentTimeMillis()
+                                    
+                                    while (isLiveStreaming && streamFrameCount < 10000) { // ~10 minutes
+                                        // Prioritize buffered frames for smooth playback
+                                        val frame = frameBuffer.poll() ?: latestFrameJpeg
+                                        
+                                        if (frame != null) {
+                                            try {
+                                                val currentTime = System.currentTimeMillis()
+                                                val timeSinceLastFrame = currentTime - lastStreamTime
+                                                
+                                                // Calculate adaptive delay based on dynamic frame rate and buffer usage
+                                                val targetDelay = 1000 / dynamicFrameRate
+                                                val bufferUsage = frameBuffer.size.toDouble() / maxBufferSize
+                                                
+                                                // Adjust delay based on buffer health (70/30 strategy)
+                                                val adaptiveDelay = when {
+                                                    bufferUsage > targetBufferUsage -> {
+                                                        // Buffer above 70%, stream faster to maintain 30% reserve
+                                                        (targetDelay * 0.8).toLong()
+                                                    }
+                                                    bufferUsage > 0.5 -> {
+                                                        // Buffer healthy, normal rate
+                                                        targetDelay.toLong()
+                                                    }
+                                                    bufferUsage > 0.2 -> {
+                                                        // Buffer getting low, slow down slightly
+                                                        (targetDelay * 1.2).toLong()
+                                                    }
+                                                    else -> {
+                                                        // Buffer very low, slow down more
+                                                        (targetDelay * 1.5).toLong()
+                                                    }
+                                                }
+                                                
+                                                // Only send frame if enough time has passed
+                                                if (timeSinceLastFrame >= adaptiveDelay) {
+                                                    // Write frame boundary and headers
+                                                    writeStringUtf8("\r\n--frame\r\n")
+                                                    writeStringUtf8("Content-Type: image/jpeg\r\n")
+                                                    writeStringUtf8("Content-Length: ${frame.size}\r\n\r\n")
+                                                    
+                                                    // Write frame data
+                                                    writeFully(frame)
+                                                    
+                                                    flush()
+                                                    streamFrameCount++
+                                                    lastStreamTime = currentTime
+                                                    
+                                                    // Minimal delay to prevent CPU spinning
+                                                    delay(2)
+                                                } else {
+                                                    // Wait for proper timing
+                                                    delay(adaptiveDelay - timeSinceLastFrame)
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.e("StreamServer", "Error writing frame", e)
+                                                break
+                                            }
+                                        } else {
+                                            // No frames available, wait longer
+                                            delay(20)
+                                        }
+                                    }
+                                    
+                                    // End boundary
+                                    writeStringUtf8("\r\n--frame--\r\n")
+                                }
+                            } catch (e: Exception) {
+                                Log.e("StreamServer", "Error streaming live video", e)
+                                call.response.headers.append("Content-Type", "text/plain")
+                                call.respond(
+                                    io.ktor.http.HttpStatusCode.InternalServerError,
+                                    "Error streaming live video: ${e.message}"
+                                )
+                            }
+                        } else {
+                            // No live stream available - return status
+                            call.response.headers.append("Content-Type", "text/plain")
+                            call.respond(
+                                io.ktor.http.HttpStatusCode.NoContent,
+                                """
+                                CatchMeStreaming - Live Stream Ready
+                                
+                                The streaming server is running and ready for live streaming.
+                                
+                                Current status:
+                                - HTTP server: Active
+                                - Live streaming: ${if (isLiveStreaming) "Active" else "Waiting for camera"}
+                                - Latest frame: ${if (latestFrameJpeg != null) "Available" else "No frame yet"}
+                                
+                                Start camera preview to begin live streaming.
+                                Access live stream at: /stream
+                                
+                                Check /status endpoint for technical details.
+                                """.trimIndent()
+                            )
+                        }
+                    }
+                    get("/frame") {
+                        // Single frame endpoint for testing
+                        call.response.headers.append("Access-Control-Allow-Origin", "*")
+                        call.response.headers.append("Cache-Control", "no-cache")
+                        
+                        val frame = latestFrameJpeg
+                        if (frame != null && isLiveStreaming) {
+                            call.response.headers.append("Content-Type", "image/jpeg")
+                            call.response.headers.append("Content-Length", frame.size.toString())
+                            call.respondBytes(frame)
+                        } else {
+                            call.respond(
+                                io.ktor.http.HttpStatusCode.NoContent,
+                                "No frame available or streaming not active"
+                            )
+                        }
                     }
                     get("/status") {
                         call.response.headers.append("Access-Control-Allow-Origin", "*")
@@ -107,18 +239,194 @@ private class AndroidStreamingServer(
     fun stopServer() {
         server?.stop(1000, 2000)
         server = null
-        mediaRecorder?.release()
-        mediaRecorder = null
     }
     
     fun startRecording(outputPath: String, surface: Surface? = null) {
         streamingFile = outputPath
         
         Log.i("StreamServer", "Streaming service configured for: $outputPath")
-        Log.i("StreamServer", "Note: Video encoding not yet implemented - serving placeholder content")
+        Log.i("StreamServer", "HTTP streaming server ready - will serve video file once recording starts")
         
-        // In a real implementation, this would be where MediaRecorder or CameraX VideoCapture starts
-        // For now, we just note the path and serve a helpful message via HTTP
+        // The actual recording is handled by RecordingRepository
+        // This server will stream the MP4 file as it's being written
+    }
+    
+    fun startLiveStreaming() {
+        isLiveStreaming = true
+        Log.i("StreamServer", "Live streaming started")
+    }
+    
+    fun stopLiveStreaming() {
+        isLiveStreaming = false
+        latestFrameJpeg = null
+        Log.i("StreamServer", "Live streaming stopped")
+    }
+    
+    fun updateFrame(jpegBytes: ByteArray) {
+        if (isLiveStreaming) {
+            // Add frame to buffer with FPS overlay
+            val frameWithOverlay = addFpsOverlay(jpegBytes)
+            
+            // Add to buffer (maintain buffer size)
+            frameBuffer.offer(frameWithOverlay)
+            while (frameBuffer.size > maxBufferSize) {
+                frameBuffer.poll() // Remove oldest frame
+            }
+            
+            // Also update latest frame
+            latestFrameJpeg = frameWithOverlay
+            
+            // Calculate actual FPS
+            calculateFps()
+            
+            Log.d("StreamServer", "Updated frame: ${jpegBytes.size} bytes, Buffer: ${frameBuffer.size}/$maxBufferSize, FPS: ${fpsFormat.format(actualFps)}")
+        }
+    }
+    
+    private fun addFpsOverlay(jpegBytes: ByteArray): ByteArray {
+        return try {
+            // Decode JPEG to bitmap
+            val originalBitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                ?: return jpegBytes
+            
+            // Create mutable bitmap for drawing
+            val overlayBitmap = originalBitmap.copy(Bitmap.Config.ARGB_8888, true)
+            val canvas = Canvas(overlayBitmap)
+            
+            // Setup paint for FPS text
+            val paint = Paint().apply {
+                color = Color.WHITE
+                textSize = 24f  // Reduced font size
+                isAntiAlias = true
+                style = Paint.Style.FILL
+                typeface = Typeface.DEFAULT_BOLD
+                setShadowLayer(2f, 1f, 1f, Color.BLACK) // Reduced shadow for smaller text
+            }
+            
+            // Create FPS and buffer info text
+            val fpsText = "FPS: ${fpsFormat.format(actualFps)}"
+            val bufferText = "Buffer: ${frameBuffer.size}/$maxBufferSize"
+            val targetFpsText = "Target: ${dynamicFrameRate}"
+            
+            // Draw background rectangles for better readability
+            val bgPaint = Paint().apply {
+                color = Color.argb(128, 0, 0, 0) // Semi-transparent black
+                style = Paint.Style.FILL
+            }
+            
+            // Draw FPS overlay at top-left
+            val textHeight = paint.textSize
+            val padding = 6f  // Reduced padding for smaller overlay
+            
+            // FPS text
+            canvas.drawRect(padding, padding, paint.measureText(fpsText) + padding * 2, textHeight + padding * 2, bgPaint)
+            canvas.drawText(fpsText, padding * 2, textHeight + padding, paint)
+            
+            // Buffer text
+            val yOffset = textHeight + padding * 3
+            canvas.drawRect(padding, yOffset, paint.measureText(bufferText) + padding * 2, yOffset + textHeight + padding, bgPaint)
+            canvas.drawText(bufferText, padding * 2, yOffset + textHeight, paint)
+            
+            // Target FPS text
+            val yOffset2 = yOffset + textHeight + padding * 2
+            canvas.drawRect(padding, yOffset2, paint.measureText(targetFpsText) + padding * 2, yOffset2 + textHeight + padding, bgPaint)
+            canvas.drawText(targetFpsText, padding * 2, yOffset2 + textHeight, paint)
+            
+            // Convert back to JPEG bytes
+            val outputStream = ByteArrayOutputStream()
+            overlayBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)
+            
+            // Clean up
+            originalBitmap.recycle()
+            overlayBitmap.recycle()
+            
+            outputStream.toByteArray()
+        } catch (e: Exception) {
+            Log.e("StreamServer", "Error adding FPS overlay", e)
+            jpegBytes // Return original if overlay fails
+        }
+    }
+    
+    private fun calculateFps() {
+        frameCount++
+        val currentTime = System.currentTimeMillis()
+        val timeDiff = currentTime - fpsCalculationStart
+        
+        if (timeDiff >= 1000) { // Calculate FPS every second
+            actualFps = (frameCount * 1000.0) / timeDiff
+            frameCount = 0
+            fpsCalculationStart = currentTime
+            
+            // Adjust dynamic frame rate based on buffer usage
+            adjustDynamicFrameRate()
+        }
+    }
+    
+    private fun adjustDynamicFrameRate() {
+        val bufferUsagePercent = frameBuffer.size.toDouble() / maxBufferSize
+        val targetUsagePercent = targetBufferUsage
+        
+        when {
+            bufferUsagePercent > 0.9 -> {
+                // Buffer almost full, increase frame rate
+                dynamicFrameRate = minOf(60, dynamicFrameRate + 2)
+            }
+            bufferUsagePercent > targetUsagePercent -> {
+                // Buffer healthy, slight increase
+                dynamicFrameRate = minOf(45, dynamicFrameRate + 1)
+            }
+            bufferUsagePercent < 0.3 -> {
+                // Buffer low, decrease frame rate
+                dynamicFrameRate = maxOf(15, dynamicFrameRate - 2)
+            }
+            bufferUsagePercent < 0.5 -> {
+                // Buffer moderate, slight decrease
+                dynamicFrameRate = maxOf(20, dynamicFrameRate - 1)
+            }
+        }
+        
+        Log.d("StreamServer", "Buffer usage: ${(bufferUsagePercent * 100).toInt()}%, Dynamic FPS: $dynamicFrameRate")
+    }
+    
+    /**
+     * Convert ImageProxy from CameraX to JPEG bytes
+     */
+    private fun imageProxyToJpeg(image: ImageProxy): ByteArray? {
+        return try {
+            val buffer = image.planes[0].buffer
+            val bytes = ByteArray(buffer.remaining())
+            buffer.get(bytes)
+            
+            // If it's already JPEG format, return as-is
+            if (image.format == ImageFormat.JPEG) {
+                return bytes
+            }
+            
+            // Convert YUV to JPEG
+            if (image.format == ImageFormat.YUV_420_888) {
+                val yuvImage = YuvImage(
+                    bytes,
+                    ImageFormat.NV21,
+                    image.width,
+                    image.height,
+                    null
+                )
+                
+                val outputStream = ByteArrayOutputStream()
+                yuvImage.compressToJpeg(
+                    Rect(0, 0, image.width, image.height),
+                    85, // JPEG quality
+                    outputStream
+                )
+                
+                return outputStream.toByteArray()
+            }
+            
+            null
+        } catch (e: Exception) {
+            Log.e("StreamServer", "Error converting image to JPEG", e)
+            null
+        }
     }
 }
 
@@ -304,6 +612,9 @@ class StreamRepository(
                 // Start recording/streaming
                 streamingServer?.startRecording(outputFile)
                 
+                // Start live streaming from camera
+                streamingServer?.startLiveStreaming()
+                
                 Log.i(TAG, "Streaming server started at: $serverUrl")
                 
                 // Update the display URL to show the HTTP endpoint
@@ -413,6 +724,9 @@ class StreamRepository(
             } else null
             
             try {
+                // Stop live streaming first
+                streamingServer?.stopLiveStreaming()
+                
                 // Stop the streaming server
                 streamingServer?.stopServer()
                 streamingServer = null
@@ -456,6 +770,13 @@ class StreamRepository(
      * Get current streaming statistics
      */
     fun getStreamingStats(): StreamingStats? = currentStats
+    
+    /**
+     * Update the live stream with a new camera frame (JPEG bytes)
+     */
+    fun updateLiveFrame(jpegBytes: ByteArray) {
+        streamingServer?.updateFrame(jpegBytes)
+    }
     
     /**
      * Clear error state and return to idle

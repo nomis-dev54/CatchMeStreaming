@@ -6,6 +6,10 @@ import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.*
 import androidx.lifecycle.LifecycleOwner
+import android.graphics.*
+import android.util.Size
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
 import com.example.catchmestreaming.util.Logger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,7 +25,8 @@ data class CameraState(
     val currentCameraSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA,
     val error: String? = null,
     val availableCameras: List<CameraInfo> = emptyList(),
-    val isVideoRecordingConfigured: Boolean = false
+    val isVideoRecordingConfigured: Boolean = false,
+    val isLiveStreamingEnabled: Boolean = false
 )
 
 class CameraRepository(private val context: Context) {
@@ -30,14 +35,18 @@ class CameraRepository(private val context: Context) {
     val cameraState: StateFlow<CameraState> = _cameraState.asStateFlow()
     
     private var cameraProvider: ProcessCameraProvider? = null
-    private var camera: Camera? = null
+    private var camera: androidx.camera.core.Camera? = null
     private var preview: Preview? = null
     private var videoCapture: VideoCapture<Recorder>? = null
+    private var imageAnalysis: ImageAnalysis? = null
     private var cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var currentLifecycleOwner: LifecycleOwner? = null
     
     // Recording surface for MediaRecorder integration
     private var recordingSurface: Surface? = null
+    
+    // Live streaming callback
+    private var frameCallback: ((ByteArray) -> Unit)? = null
     
     companion object {
         private const val TAG = "CameraRepository"
@@ -99,6 +108,8 @@ class CameraRepository(private val context: Context) {
                 add(preview!!)
                 // Add VideoCapture if recording is configured
                 videoCapture?.let { add(it) }
+                // Add ImageAnalysis if live streaming is enabled
+                imageAnalysis?.let { add(it) }
             }
             
             // Bind use cases to camera
@@ -229,6 +240,8 @@ class CameraRepository(private val context: Context) {
                 preview?.let { add(it) }
                 // Add VideoCapture if available
                 videoCapture?.let { add(it) }
+                // Add ImageAnalysis if live streaming is enabled
+                imageAnalysis?.let { add(it) }
             }
             
             if (useCases.isNotEmpty()) {
@@ -274,17 +287,8 @@ class CameraRepository(private val context: Context) {
             )
             
             // If preview is running, restart it with the new camera
-            if (_cameraState.value.isPreviewStarted && preview != null) {
-                provider.unbindAll()
-                camera = provider.bindToLifecycle(
-                    camera?.cameraInfo?.let { info ->
-                        // We need a LifecycleOwner here, but we can't store it in the repository
-                        // This will be handled in the ViewModel layer
-                        return Result.success(Unit)
-                    } ?: return Result.failure(IllegalStateException("No active lifecycle")),
-                    newSelector,
-                    preview!!
-                )
+            if (_cameraState.value.isPreviewStarted && currentLifecycleOwner != null) {
+                restartPreview()
             }
             
             Result.success(Unit)
@@ -321,6 +325,154 @@ class CameraRepository(private val context: Context) {
      */
     fun getRecordingSurface(): Surface? {
         return recordingSurface
+    }
+    
+    /**
+     * Enable live streaming by setting up ImageAnalysis
+     */
+    fun enableLiveStreaming(callback: (ByteArray) -> Unit): Result<Unit> {
+        return try {
+            Logger.d(TAG, "Enabling live streaming")
+            
+            frameCallback = callback
+            
+            // Create ImageAnalysis use case for frame capture
+            imageAnalysis = ImageAnalysis.Builder()
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+                .also { analysis ->
+                    analysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                        processImageForStreaming(imageProxy)
+                    }
+                }
+            
+            _cameraState.value = _cameraState.value.copy(
+                isLiveStreamingEnabled = true,
+                error = null
+            )
+            
+            // Restart preview to include ImageAnalysis
+            restartPreview()
+            
+            Logger.d(TAG, "Live streaming enabled successfully")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Logger.e(TAG, "Failed to enable live streaming", e)
+            _cameraState.value = _cameraState.value.copy(
+                isLiveStreamingEnabled = false,
+                error = "Failed to enable live streaming: ${e.message}"
+            )
+            Result.failure(e)
+        }
+    }
+    
+    /**
+     * Disable live streaming
+     */
+    fun disableLiveStreaming(): Result<Unit> {
+        return try {
+            Logger.d(TAG, "Disabling live streaming")
+            
+            frameCallback = null
+            imageAnalysis = null
+            
+            _cameraState.value = _cameraState.value.copy(
+                isLiveStreamingEnabled = false,
+                error = null
+            )
+            
+            // Restart preview without ImageAnalysis
+            restartPreview()
+            
+            Logger.d(TAG, "Live streaming disabled successfully")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Logger.e(TAG, "Failed to disable live streaming", e)
+            _cameraState.value = _cameraState.value.copy(
+                error = "Failed to disable live streaming: ${e.message}"
+            )
+            Result.failure(e)
+        }
+    }
+    
+    /**
+     * Process camera frames for live streaming
+     */
+    private fun processImageForStreaming(imageProxy: ImageProxy) {
+        try {
+            val jpegBytes = convertImageProxyToJpeg(imageProxy)
+            if (jpegBytes != null) {
+                Logger.d(TAG, "Captured frame: ${jpegBytes.size} bytes")
+                frameCallback?.invoke(jpegBytes)
+            } else {
+                Logger.w(TAG, "Failed to convert frame to JPEG")
+            }
+        } catch (e: Exception) {
+            Logger.e(TAG, "Error processing frame for streaming", e)
+        } finally {
+            imageProxy.close()
+        }
+    }
+    
+    /**
+     * Convert ImageProxy to JPEG bytes
+     */
+    private fun convertImageProxyToJpeg(image: ImageProxy): ByteArray? {
+        return try {
+            when (image.format) {
+                ImageFormat.JPEG -> {
+                    // Already JPEG, extract bytes
+                    val buffer = image.planes[0].buffer
+                    val bytes = ByteArray(buffer.remaining())
+                    buffer.get(bytes)
+                    bytes
+                }
+                ImageFormat.YUV_420_888 -> {
+                    // Convert YUV to JPEG
+                    val yBuffer = image.planes[0].buffer
+                    val uBuffer = image.planes[1].buffer
+                    val vBuffer = image.planes[2].buffer
+                    
+                    val ySize = yBuffer.remaining()
+                    val uSize = uBuffer.remaining()
+                    val vSize = vBuffer.remaining()
+                    
+                    val nv21 = ByteArray(ySize + uSize + vSize)
+                    
+                    yBuffer.get(nv21, 0, ySize)
+                    val uvPixelStride = image.planes[1].pixelStride
+                    if (uvPixelStride == 1) {
+                        uBuffer.get(nv21, ySize, uSize)
+                        vBuffer.get(nv21, ySize + uSize, vSize)
+                    } else {
+                        // Interleaved UV
+                        val uvBytes = ByteArray(uSize + vSize)
+                        uBuffer.get(uvBytes, 0, uSize)
+                        vBuffer.get(uvBytes, uSize, vSize)
+                        
+                        var uvIndex = 0
+                        for (i in ySize until nv21.size step 2) {
+                            nv21[i] = uvBytes[uvIndex + 1] // V
+                            nv21[i + 1] = uvBytes[uvIndex] // U
+                            uvIndex += 2
+                        }
+                    }
+                    
+                    val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
+                    val outputStream = ByteArrayOutputStream()
+                    yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 75, outputStream)
+                    outputStream.toByteArray()
+                }
+                else -> {
+                    Logger.w(TAG, "Unsupported image format: ${image.format}")
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            Logger.e(TAG, "Error converting image to JPEG", e)
+            null
+        }
     }
     
     fun release() {

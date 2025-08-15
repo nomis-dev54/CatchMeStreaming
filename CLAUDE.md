@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CatchMeStreaming is an Android RTSP streaming application built with:
+CatchMeStreaming is an Android HTTP video streaming application built with:
 - **Kotlin** with **Jetpack Compose** and **Material 3** UI
 - **CameraX** for camera handling
-- **RootEncoder** for RTSP streaming
+- **Ktor/Netty HTTP server** for video streaming
 - **MediaRecorder API** for local MP4 recording
 - **MVVM architecture** with repositories and ViewModels
 - Target API: 31+ (compileSdk: 36, minSdk: 31, targetSdk: 36)
@@ -44,15 +44,15 @@ CatchMeStreaming is an Android RTSP streaming application built with:
 - Kotlin: 2.0.21
 - AGP: 8.11.1
 - Material 3 via Compose
-- CameraX (to be added via Context7)
-- RootEncoder (already integrated from JitPack)
+- CameraX (already integrated)
+- Ktor/Netty (already integrated for HTTP streaming server)
 
 ## Development Guidelines
 
 ### Context7 Integration
 - **ALWAYS** use Context7 to verify syntax for any package used in this app
 - If there's no Context7 entry for a package, notify user and provide options
-- Required for: RootEncoder, CameraX, Jetpack Compose, testing frameworks
+- Required for: CameraX, Jetpack Compose, Ktor, testing frameworks
 
 ### Error Handling and Debugging
 - If issue takes longer than 3 attempts to fix, enable `android.util.Log` on 4th attempt
@@ -77,7 +77,7 @@ CatchMeStreaming is an Android RTSP streaming application built with:
 - Use Jetpack Compose for UI with Material 3 design
 
 ### Security Best Practices
-- Use Android Keystore for sensitive data (RTSP credentials)
+- Use Android Keystore for sensitive data (streaming credentials)
 - Request runtime permissions with clear user prompts
 - Use placeholder values for API keys in documentation (e.g., "Your_Key")
 - No hardcoded secrets or credentials
