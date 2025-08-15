@@ -266,4 +266,68 @@ class InputValidator {
             .joinToString("")
             .let { if (input.length > 20) "$it..." else it }
     }
+    
+    // Legacy method names for backward compatibility with tests
+    fun validateRTSPUrl(url: String): ValidationResult {
+        return validateHttpUrl(url)
+    }
+    
+    fun validateStreamingUrl(url: String): ValidationResult {
+        return validateHttpUrl(url)
+    }
+    
+    fun validateServerUrl(serverUrl: String): ValidationResult {
+        if (serverUrl.isBlank()) {
+            return ValidationResult(false, "Server URL cannot be empty")
+        }
+        
+        if (serverUrl.length > MAX_INPUT_LENGTH) {
+            return ValidationResult(false, "Server URL too long")
+        }
+        
+        // Check for dangerous characters
+        if (serverUrl.any { it in DANGEROUS_CHARS }) {
+            return ValidationResult(false, "Invalid characters in server URL")
+        }
+        
+        // Validate IP address format
+        if (!IP_PATTERN.matcher(serverUrl).matches()) {
+            // Allow hostnames too - basic hostname validation
+            val hostnamePattern = Pattern.compile(
+                "^[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?(\\.([a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?))*$"
+            )
+            if (!hostnamePattern.matcher(serverUrl).matches()) {
+                return ValidationResult(false, "Invalid server URL format")
+            }
+        }
+        
+        return ValidationResult(true)
+    }
+    
+    fun validateStreamPath(streamPath: String): ValidationResult {
+        if (streamPath.isBlank()) {
+            return ValidationResult(false, "Stream path cannot be empty")
+        }
+        
+        if (streamPath.length > MAX_INPUT_LENGTH) {
+            return ValidationResult(false, "Stream path too long")
+        }
+        
+        // Check for path traversal
+        if (streamPath.contains("../") || streamPath.contains("..\\")) {
+            return ValidationResult(false, "Path traversal not allowed")
+        }
+        
+        // Check for dangerous characters
+        if (streamPath.any { it in DANGEROUS_CHARS }) {
+            return ValidationResult(false, "Invalid characters in stream path")
+        }
+        
+        // Must start with /
+        if (!streamPath.startsWith("/")) {
+            return ValidationResult(false, "Stream path must start with /")
+        }
+        
+        return ValidationResult(true)
+    }
 }

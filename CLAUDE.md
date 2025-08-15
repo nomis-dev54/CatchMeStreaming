@@ -107,3 +107,5 @@ CatchMeStreaming is an Android RTSP streaming application built with:
 
 - if a test fails every effort should be made to fix an issue before simplifying a test
 - if a function fails every effort should be made to fix the issue instead of removing or simplifying, if it can not be resolved inform me of the options that can be taken
+- there is alway a device conected via usb, if the test requires real world testing uses it
+- if a test need to use a device to test a function then update the Debug verions on the device and start the app is required, in interaction is required infrom me so I can do it.

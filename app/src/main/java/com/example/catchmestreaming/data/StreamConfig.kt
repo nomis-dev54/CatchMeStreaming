@@ -18,7 +18,8 @@ data class StreamConfig(
     val enableAudio: Boolean = true,
     val maxBitrate: Int = 2000000, // 2 Mbps default
     val keyFrameInterval: Int = 15, // 15 seconds
-    val useAuthentication: Boolean = false // HTTP streaming typically doesn't need auth
+    val useAuthentication: Boolean = false, // HTTP streaming typically doesn't need auth
+    val enableAuth: Boolean = false // Legacy property for backward compatibility
 ) {
     
     companion object {

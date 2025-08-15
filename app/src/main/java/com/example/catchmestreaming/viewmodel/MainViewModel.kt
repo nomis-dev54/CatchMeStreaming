@@ -33,6 +33,7 @@ data class MainUiState(
     val hasMediaAudioPermission: Boolean = false,
     val error: String? = null,
     val streamUrl: String? = null,
+    val rtspUrl: String? = null, // Legacy property for backward compatibility
     val canSwitchCamera: Boolean = false,
     val streamState: StreamState = StreamState.Idle,
     val streamConfig: StreamConfig? = null,
