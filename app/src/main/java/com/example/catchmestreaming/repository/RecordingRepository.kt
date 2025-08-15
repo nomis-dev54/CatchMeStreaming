@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Environment
+import android.view.Surface
 import androidx.core.content.ContextCompat
 import com.example.catchmestreaming.data.RecordingConfig
 import com.example.catchmestreaming.data.RecordingState
@@ -401,6 +402,68 @@ class RecordingRepository(
         currentConfig = it
     }
     
+    
+    /**
+     * Prepare MediaRecorder for recording and return the surface for camera integration
+     * This should be called before starting camera preview with surface integration
+     */
+    suspend fun prepareRecorderAndGetSurface(): Result<Surface> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val config = currentConfig ?: RecordingConfig.createDefault().also {
+                    Logger.i(TAG, "Using default recording configuration")
+                    currentConfig = it
+                }
+                
+                // Validate permissions
+                val permissionCheck = validatePermissions()
+                if (!permissionCheck.isSuccess) {
+                    Logger.e(TAG, "Permission validation failed")
+                    return@withContext Result.failure(permissionCheck.exceptionOrNull()!!)
+                }
+                
+                // Check storage availability
+                val storageCheck = validateStorageSpace(config)
+                if (!storageCheck.isSuccess) {
+                    Logger.e(TAG, "Storage validation failed")
+                    return@withContext Result.failure(storageCheck.exceptionOrNull()!!)
+                }
+                
+                // Create output directory
+                val directoryResult = createOutputDirectory(config)
+                if (!directoryResult.isSuccess) {
+                    Logger.e(TAG, "Failed to create output directory")
+                    return@withContext Result.failure(directoryResult.exceptionOrNull()!!)
+                }
+                
+                // Generate unique filename
+                val outputPath = generateUniqueOutputPath(config)
+                
+                // Setup MediaRecorder
+                val mediaRecorderResult = setupMediaRecorder(config, outputPath)
+                if (!mediaRecorderResult.isSuccess) {
+                    Logger.e(TAG, "Failed to setup MediaRecorder")
+                    return@withContext Result.failure(mediaRecorderResult.exceptionOrNull()!!)
+                }
+                
+                // Get surface from MediaRecorder
+                val surface = mediaRecorder?.surface
+                if (surface == null) {
+                    Logger.e(TAG, "Failed to get surface from MediaRecorder")
+                    return@withContext Result.failure(IllegalStateException("MediaRecorder surface is null"))
+                }
+                
+                Logger.i(TAG, "MediaRecorder prepared and surface ready")
+                Result.success(surface)
+                
+            } catch (e: Exception) {
+                Logger.e(TAG, "Failed to prepare MediaRecorder", e)
+                cleanup()
+                Result.failure(e)
+            }
+        }
+    }
+    
     /**
      * Clean up resources
      */
@@ -586,6 +649,27 @@ class RecordingRepository(
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to setup MediaRecorder", e)
             cleanup()
+            Result.failure(e)
+        }
+    }
+    
+    /**
+     * Get the MediaRecorder surface for camera integration
+     * Must be called after MediaRecorder is prepared
+     */
+    fun getRecorderSurface(): Result<Surface> {
+        return try {
+            val recorder = mediaRecorder ?: return Result.failure(
+                IllegalStateException("MediaRecorder not initialized. Call startRecording first.")
+            )
+            
+            val surface = recorder.surface ?: return Result.failure(
+                IllegalStateException("MediaRecorder surface not available. Ensure recorder is prepared.")
+            )
+            
+            Result.success(surface)
+        } catch (e: Exception) {
+            Logger.e(TAG, "Failed to get recorder surface", e)
             Result.failure(e)
         }
     }

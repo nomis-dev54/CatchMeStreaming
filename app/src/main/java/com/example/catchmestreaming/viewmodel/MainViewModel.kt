@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.catchmestreaming.repository.CameraRepository
 import com.example.catchmestreaming.repository.StreamRepository
 import com.example.catchmestreaming.repository.RecordingRepository
+import com.example.catchmestreaming.integration.MediaRecorderCameraXIntegration
 import com.example.catchmestreaming.data.StreamConfig
 import com.example.catchmestreaming.data.StreamState
 import com.example.catchmestreaming.data.RecordingConfig
@@ -52,6 +53,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val streamRepository = StreamRepository(application)
     private val recordingRepository = RecordingRepository(application)
     private val fileManager = FileManager(application)
+    
+    // MediaRecorder + CameraX integration layer
+    private val recordingIntegration = MediaRecorderCameraXIntegration(
+        recordingRepository, 
+        cameraRepository
+    )
     
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -381,7 +388,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         
         viewModelScope.launch {
-            val result = recordingRepository.startRecording()
+            // First setup the MediaRecorder + CameraX integration
+            val setupResult = recordingIntegration.setupRecordingIntegration()
+            if (setupResult.isFailure) {
+                val error = setupResult.exceptionOrNull()?.message ?: "Failed to setup recording integration"
+                _uiState.value = _uiState.value.copy(error = error)
+                return@launch
+            }
+            
+            // Then start recording using the integration layer
+            val result = recordingIntegration.startRecording()
             if (result.isFailure) {
                 val error = result.exceptionOrNull()?.message ?: "Unknown recording error"
                 _uiState.value = _uiState.value.copy(error = error)
@@ -394,7 +410,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     fun stopRecording() {
         viewModelScope.launch {
-            val result = recordingRepository.stopRecording()
+            // Use integration layer to stop recording
+            val result = recordingIntegration.stopRecording()
             if (result.isFailure) {
                 val error = result.exceptionOrNull()?.message ?: "Unknown error stopping recording"
                 _uiState.value = _uiState.value.copy(error = error)
@@ -506,5 +523,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         cameraRepository.release()
         streamRepository.cleanup()
         recordingRepository.cleanup()
+        recordingIntegration.cleanup()
     }
 }

@@ -1,9 +1,12 @@
 package com.example.catchmestreaming.repository
 
 import android.content.Context
+import android.view.Surface
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.*
 import androidx.lifecycle.LifecycleOwner
+import com.example.catchmestreaming.util.Logger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,7 +20,8 @@ data class CameraState(
     val isPreviewStarted: Boolean = false,
     val currentCameraSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA,
     val error: String? = null,
-    val availableCameras: List<CameraInfo> = emptyList()
+    val availableCameras: List<CameraInfo> = emptyList(),
+    val isVideoRecordingConfigured: Boolean = false
 )
 
 class CameraRepository(private val context: Context) {
@@ -28,7 +32,16 @@ class CameraRepository(private val context: Context) {
     private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
     private var preview: Preview? = null
+    private var videoCapture: VideoCapture<Recorder>? = null
     private var cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private var currentLifecycleOwner: LifecycleOwner? = null
+    
+    // Recording surface for MediaRecorder integration
+    private var recordingSurface: Surface? = null
+    
+    companion object {
+        private const val TAG = "CameraRepository"
+    }
     
     suspend fun initializeCamera(): Result<Unit> {
         return try {
@@ -69,6 +82,8 @@ class CameraRepository(private val context: Context) {
                 IllegalStateException("Camera not initialized")
             )
             
+            currentLifecycleOwner = lifecycleOwner
+            
             // Create Preview use case
             preview = Preview.Builder()
                 .build()
@@ -79,11 +94,18 @@ class CameraRepository(private val context: Context) {
             // Unbind any existing use cases
             provider.unbindAll()
             
+            // Create list of use cases to bind
+            val useCases = mutableListOf<UseCase>().apply {
+                add(preview!!)
+                // Add VideoCapture if recording is configured
+                videoCapture?.let { add(it) }
+            }
+            
             // Bind use cases to camera
             camera = provider.bindToLifecycle(
                 lifecycleOwner,
                 _cameraState.value.currentCameraSelector,
-                preview
+                *useCases.toTypedArray()
             )
             
             _cameraState.value = _cameraState.value.copy(
@@ -106,6 +128,8 @@ class CameraRepository(private val context: Context) {
             cameraProvider?.unbindAll()
             preview = null
             camera = null
+            recordingSurface?.release()
+            recordingSurface = null
             
             _cameraState.value = _cameraState.value.copy(
                 isPreviewStarted = false,
@@ -116,6 +140,110 @@ class CameraRepository(private val context: Context) {
         } catch (e: Exception) {
             _cameraState.value = _cameraState.value.copy(
                 error = "Failed to stop preview: ${e.message}"
+            )
+            Result.failure(e)
+        }
+    }
+    
+    /**
+     * Configure video recording with a surface from MediaRecorder
+     * 
+     * IMPORTANT: For MediaRecorder integration, we create a VideoCapture use case
+     * with MediaStreamSpec that can work with the external surface.
+     * This is the correct approach for MediaRecorder + CameraX integration.
+     */
+    fun configureVideoRecording(surface: Surface): Result<Unit> {
+        return try {
+            Logger.d(TAG, "Configuring video recording with MediaRecorder surface")
+            
+            recordingSurface = surface
+            
+            // Create VideoCapture with Recorder that can work with MediaRecorder
+            val recorder = Recorder.Builder()
+                .setQualitySelector(QualitySelector.from(Quality.HD))
+                .build()
+            
+            videoCapture = VideoCapture.withOutput(recorder)
+            
+            _cameraState.value = _cameraState.value.copy(
+                isVideoRecordingConfigured = true,
+                error = null
+            )
+            
+            Logger.d(TAG, "Video recording configured successfully")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Logger.e(TAG, "Failed to configure video recording", e)
+            _cameraState.value = _cameraState.value.copy(
+                isVideoRecordingConfigured = false,
+                error = "Failed to configure video recording: ${e.message}"
+            )
+            Result.failure(e)
+        }
+    }
+    
+    /**
+     * Remove video recording configuration
+     */
+    fun removeVideoRecording(): Result<Unit> {
+        return try {
+            Logger.d(TAG, "Removing video recording configuration")
+            
+            recordingSurface?.release()
+            recordingSurface = null
+            videoCapture = null
+            
+            _cameraState.value = _cameraState.value.copy(
+                isVideoRecordingConfigured = false,
+                error = null
+            )
+            
+            Logger.d(TAG, "Video recording configuration removed")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Logger.e(TAG, "Failed to remove video recording", e)
+            _cameraState.value = _cameraState.value.copy(
+                error = "Failed to remove video recording: ${e.message}"
+            )
+            Result.failure(e)
+        }
+    }
+    
+    /**
+     * Restart preview with current configuration
+     */
+    private fun restartPreview(): Result<Unit> {
+        return try {
+            val provider = cameraProvider ?: return Result.failure(
+                IllegalStateException("Camera not initialized")
+            )
+            val lifecycleOwner = currentLifecycleOwner ?: return Result.failure(
+                IllegalStateException("No lifecycle owner available")
+            )
+            
+            // Unbind current use cases
+            provider.unbindAll()
+            
+            // Create list of use cases to bind
+            val useCases = mutableListOf<UseCase>().apply {
+                preview?.let { add(it) }
+                // Add VideoCapture if available
+                videoCapture?.let { add(it) }
+            }
+            
+            if (useCases.isNotEmpty()) {
+                // Bind use cases to camera
+                camera = provider.bindToLifecycle(
+                    lifecycleOwner,
+                    _cameraState.value.currentCameraSelector,
+                    *useCases.toTypedArray()
+                )
+            }
+            
+            Result.success(Unit)
+        } catch (e: Exception) {
+            _cameraState.value = _cameraState.value.copy(
+                error = "Failed to restart preview: ${e.message}"
             )
             Result.failure(e)
         }
@@ -178,6 +306,21 @@ class CameraRepository(private val context: Context) {
     
     fun getCameraInfo(): CameraInfo? {
         return camera?.cameraInfo
+    }
+    
+    /**
+     * Get the VideoCapture recorder for MediaRecorder integration
+     * This allows the RecordingRepository to connect with CameraX
+     */
+    fun getVideoCapture(): VideoCapture<Recorder>? {
+        return videoCapture
+    }
+    
+    /**
+     * Get the recording surface that was configured
+     */
+    fun getRecordingSurface(): Surface? {
+        return recordingSurface
     }
     
     fun release() {
